@@ -39,6 +39,16 @@ CREATE TABLE IF NOT EXISTS article (
 );
 CREATE INDEX IF NOT EXISTS idx_article_pub ON article(published_at);
 
+-- FR-203: persisted robots.txt cache, keyed by host. The process exits every
+-- 15 minutes, so an in-memory-only cache never let ROBOTS_CACHE_TTL_H apply
+-- across runs; this table is what makes the TTL actually take effect.
+-- Infrastructure for the existing week-1 FR-203 requirement, not new scope.
+CREATE TABLE IF NOT EXISTS robots_cache (
+  host       TEXT PRIMARY KEY,
+  body       TEXT NOT NULL,
+  fetched_at TEXT NOT NULL
+);
+
 -- Observability (all weeks)
 CREATE TABLE IF NOT EXISTS run_log (
   id          INTEGER PRIMARY KEY,
