@@ -75,9 +75,11 @@ feeds:
     packs: ["ai-industry"]
     weight: 1.1
 
-  - name: "The Verge - AI"
-    url: "https://www.theverge.com/ai-artificial-intelligence/rss/index.xml"
-    packs: ["ai-industry"]
+  # NOTE: The Verge retired its AI-specific vertical feed (404). Repointed to
+  # the general site feed and retagged general-tech to match actual content.
+  - name: "The Verge"
+    url: "https://www.theverge.com/rss/index.xml"
+    packs: ["general-tech"]
     weight: 1.0
 
   - name: "Ars Technica"
