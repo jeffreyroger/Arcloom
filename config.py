@@ -56,9 +56,13 @@ STALE_DAYS = 30
 # --- Static reference data (NFR-503: centralized here; not G5 tunables —
 # lists of known hosts/params, not thresholds) ---
 
-# FR-207: query params stripped during URL canonicalization.
+# FR-207: query params stripped during URL canonicalization. `ref` and
+# `source` are deliberately excluded — FR-207 only specifies utm_*, fbclid,
+# gclid, and fragment, and both are load-bearing on some sites (e.g.
+# distinguishing content sections), so stripping them can collapse
+# genuinely distinct URLs into one and cause false-positive dedup.
 TRACKING_PREFIXES = ("utm_",)
-TRACKING_EXACT = {"fbclid", "gclid", "mc_cid", "mc_eid", "ref", "source"}
+TRACKING_EXACT = {"fbclid", "gclid", "mc_cid", "mc_eid"}
 
 # FR-207: known redirect wrapper hosts, resolved one level via a query param.
 WRAPPER_HOSTS = {"news.google.com", "feedproxy.google.com"}

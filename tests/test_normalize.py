@@ -11,13 +11,23 @@ def test_canonicalize_strips_utm_and_fragment():
 
 
 def test_canonicalize_identical_across_sources():
-    url1 = "https://Example.com/Article-Name?utm_source=twitter&utm_medium=social&ref=abc"
+    url1 = "https://Example.com/Article-Name?utm_source=twitter&utm_medium=social&fbclid=abc"
     url2 = "https://example.com/Article-Name/?gclid=xyz&utm_campaign=summer"
     assert canonicalize_url(url1) == canonicalize_url(url2)
 
 
 def test_canonicalize_root_path_preserved():
     assert canonicalize_url("https://Example.com/") == "https://example.com/"
+
+
+def test_canonicalize_preserves_ref_as_load_bearing_param():
+    # FR-207 only lists utm_*, fbclid, gclid, fragment for stripping. `ref`
+    # is load-bearing on some sites (e.g. distinguishing content sections),
+    # so stripping it can collapse genuinely distinct URLs and cause
+    # false-positive dedup.
+    url1 = "https://example.com/article?ref=homepage"
+    url2 = "https://example.com/article?ref=newsletter"
+    assert canonicalize_url(url1) != canonicalize_url(url2)
 
 
 def test_canonicalize_google_news_wrapper():
