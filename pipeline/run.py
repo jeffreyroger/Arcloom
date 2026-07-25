@@ -106,6 +106,10 @@ async def run(dry_run: bool = False) -> int:
         f"[run] articles: {counts['entries_seen']} seen, "
         f"{counts['articles_inserted']} inserted, {counts['duplicates_skipped']} duplicates"
     )
+    print(
+        f"[run] robots.txt: {counts['robots_cache_hits']} cache hits, "
+        f"{counts['robots_fetches']} fetches"
+    )
 
     if dry_run:
         conn.rollback()
