@@ -10,8 +10,7 @@ import asyncio
 import json
 import sqlite3
 import time
-from datetime import datetime, timezone
-from html.parser import HTMLParser
+from datetime import datetime, timedelta, timezone
 from urllib import robotparser
 from urllib.parse import urlsplit
 
@@ -19,10 +18,7 @@ import feedparser
 import httpx
 
 import config
-from pipeline.normalize import canonicalize_url, normalize_timestamp
-
-FETCH_TIMEOUT_S = 10.0
-SNIPPET_MAX_CHARS = 2000
+from pipeline.normalize import canonicalize_url, derive_snippet, normalize_timestamp
 
 
 # NFR-403: run_log timestamps and article fetched_at are UTC ISO8601.
@@ -30,38 +26,30 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-class _TagStripper(HTMLParser):
-    def __init__(self):
-        super().__init__()
-        self._parts: list[str] = []
-
-    def handle_data(self, data: str) -> None:
-        self._parts.append(data)
-
-    def get_text(self) -> str:
-        return "".join(self._parts)
-
-
-# FR-204: feed-provided snippets may carry inline HTML from the publisher —
-# strip markup and cap length. Never the article body itself.
-def _clean_snippet(raw: str | None) -> str | None:
-    if not raw:
-        return None
-    stripper = _TagStripper()
-    stripper.feed(raw)
-    cleaned = stripper.get_text().strip()
-    if not cleaned:
-        return None
-    return cleaned[:SNIPPET_MAX_CHARS]
-
-
 # FR-101/FR-102/FR-103: sync feeds.yaml (via config.load_feeds, which fails
 # loudly on malformed entries) into the source table at startup.
+#
+# FR-101/AC-7: removal from feeds.yaml MUST NOT require a code change to stop
+# ingestion of that feed. Rows are reconciled in both directions: feeds new
+# to the file are inserted, feeds present in both are updated, and feeds no
+# longer in the file are marked status='disabled', enabled=0 — never
+# deleted, so past articles keep a valid source_id and run_log stays
+# coherent. `disabled` (removed from config, intentional) is distinct from
+# `degraded` (failing repeatedly, unintentional): a feed re-added to the
+# file has its disabled status cleared back to 'ok', but a degraded status
+# is left alone since that reflects observed failures, not config.
 def sync_sources(conn: sqlite3.Connection, feeds: list[dict]) -> None:
+    seen_urls = []
     for feed in feeds:
         packs_json = json.dumps(feed["packs"])
+        seen_urls.append(feed["url"])
         cur = conn.execute(
-            "UPDATE source SET name=?, packs=?, lang=?, weight=?, enabled=? WHERE feed_url=?",
+            """
+            UPDATE source
+            SET name=?, packs=?, lang=?, weight=?, enabled=?,
+                status = CASE WHEN status = 'disabled' THEN 'ok' ELSE status END
+            WHERE feed_url=?
+            """,
             (feed["name"], packs_json, feed["lang"], feed["weight"], int(feed["enabled"]), feed["url"]),
         )
         if cur.rowcount == 0:
@@ -72,6 +60,16 @@ def sync_sources(conn: sqlite3.Connection, feeds: list[dict]) -> None:
                 """,
                 (feed["name"], feed["url"], packs_json, feed["lang"], feed["weight"], int(feed["enabled"])),
             )
+
+    if seen_urls:
+        placeholders = ",".join("?" for _ in seen_urls)
+        conn.execute(
+            f"UPDATE source SET status='disabled', enabled=0 WHERE feed_url NOT IN ({placeholders})",
+            seen_urls,
+        )
+    else:
+        conn.execute("UPDATE source SET status='disabled', enabled=0")
+
     conn.commit()
 
 
@@ -87,12 +85,14 @@ async def _wait_for_host(host: str, last_request_at: dict, host_locks: dict) -> 
         last_request_at[host] = time.monotonic()
 
 
-# FR-203: fetch robots.txt for a host. Failure is treated as allowed, logged.
-async def _fetch_robots(client: httpx.AsyncClient, scheme: str, host: str):
+# FR-203: fetch robots.txt for a host over the network. Failure (network
+# error or HTTP >=400) is treated as allowed, and logged — never cached, so
+# the next run retries rather than permanently trusting a transient failure.
+async def _fetch_robots_body(client: httpx.AsyncClient, scheme: str, host: str) -> str | None:
     robots_url = f"{scheme}://{host}/robots.txt"
     try:
         resp = await client.get(
-            robots_url, headers={"User-Agent": config.USER_AGENT}, timeout=FETCH_TIMEOUT_S
+            robots_url, headers={"User-Agent": config.USER_AGENT}, timeout=config.FETCH_TIMEOUT_S
         )
     except httpx.HTTPError as exc:
         print(f"[ingest] robots.txt fetch failed for {host}: {exc}; treating as allowed")
@@ -102,39 +102,75 @@ async def _fetch_robots(client: httpx.AsyncClient, scheme: str, host: str):
         print(f"[ingest] robots.txt fetch failed for {host}: HTTP {resp.status_code}; treating as allowed")
         return None
 
+    return resp.text
+
+
+def _parse_robots(body: str) -> robotparser.RobotFileParser:
     rp = robotparser.RobotFileParser()
-    rp.parse(resp.text.splitlines())
+    rp.parse(body.splitlines())
     return rp
 
 
-# FR-203: robots.txt checked before every feed fetch, cached per host with a
-# ROBOTS_CACHE_TTL_H TTL.
+def _robots_cache_fresh(fetched_at: str) -> bool:
+    fetched_dt = datetime.strptime(fetched_at, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+    return datetime.now(timezone.utc) - fetched_dt < timedelta(hours=config.ROBOTS_CACHE_TTL_H)
+
+
+# FR-203: robots.txt checked before every feed fetch. The cache is persisted
+# in the `robots_cache` table (host, body, fetched_at) so ROBOTS_CACHE_TTL_H
+# survives across runs — the process exits every ~15 minutes, so an
+# in-memory-only cache never had a chance to apply and needlessly refetched
+# every host's robots.txt on every run. `robots_cache`/`robots_locks` here
+# are this run's in-memory layer, avoiding duplicate DB reads or fetches for
+# a host checked more than once within a single run. Returns (allowed,
+# source) where source is "cache" or "fetch", for stage_counts reporting.
 async def _robots_allowed(
-    client: httpx.AsyncClient, url: str, robots_cache: dict, robots_locks: dict
-) -> bool:
+    conn: sqlite3.Connection,
+    client: httpx.AsyncClient,
+    url: str,
+    robots_cache: dict,
+    robots_locks: dict,
+) -> tuple[bool, str]:
     parts = urlsplit(url)
     host = parts.hostname or ""
     lock = robots_locks.setdefault(host, asyncio.Lock())
 
     async with lock:
-        cached = robots_cache.get(host)
-        now = time.monotonic()
-        ttl_s = config.ROBOTS_CACHE_TTL_H * 3600
-        if cached is None or now - cached[1] > ttl_s:
-            rp = await _fetch_robots(client, parts.scheme, host)
-            robots_cache[host] = (rp, now)
+        if host in robots_cache:
+            rp, source = robots_cache[host]
         else:
-            rp = cached[0]
+            row = conn.execute(
+                "SELECT body, fetched_at FROM robots_cache WHERE host = ?", (host,)
+            ).fetchone()
+            if row is not None and _robots_cache_fresh(row[1]):
+                rp = _parse_robots(row[0])
+                source = "cache"
+            else:
+                body = await _fetch_robots_body(client, parts.scheme, host)
+                source = "fetch"
+                if body is not None:
+                    conn.execute(
+                        """
+                        INSERT INTO robots_cache (host, body, fetched_at) VALUES (?, ?, ?)
+                        ON CONFLICT(host) DO UPDATE SET body = excluded.body, fetched_at = excluded.fetched_at
+                        """,
+                        (host, body, _now_iso()),
+                    )
+                    conn.commit()
+                    rp = _parse_robots(body)
+                else:
+                    rp = None
+            robots_cache[host] = (rp, source)
 
-    if rp is None:
-        return True
-    return rp.can_fetch(config.USER_AGENT, url)
+    allowed = True if rp is None else rp.can_fetch(config.USER_AGENT, url)
+    return allowed, source
 
 
 # FR-201/FR-202/FR-203/FR-205: conditional, robots-aware, polite feed fetch.
 # Returns a plain result dict; never raises for network-level failures so a
 # single feed can never abort the run (NFR-401).
 async def _fetch_one(
+    conn: sqlite3.Connection,
     client: httpx.AsyncClient,
     source_row: sqlite3.Row,
     semaphore: asyncio.Semaphore,
@@ -150,8 +186,9 @@ async def _fetch_one(
     await _wait_for_host(host, last_request_at, host_locks)
 
     async with semaphore:
-        if not await _robots_allowed(client, feed_url, robots_cache, robots_locks):
-            return {"source_id": source_id, "status": "skipped_robots"}
+        allowed, robots_source = await _robots_allowed(conn, client, feed_url, robots_cache, robots_locks)
+        if not allowed:
+            return {"source_id": source_id, "status": "skipped_robots", "robots_source": robots_source}
 
         headers = {"User-Agent": config.USER_AGENT}
         if source_row["etag"]:
@@ -160,16 +197,21 @@ async def _fetch_one(
             headers["If-Modified-Since"] = source_row["last_modified"]
 
         try:
-            resp = await client.get(feed_url, headers=headers, timeout=FETCH_TIMEOUT_S)
+            resp = await client.get(feed_url, headers=headers, timeout=config.FETCH_TIMEOUT_S)
         except httpx.HTTPError as exc:
-            return {"source_id": source_id, "status": "error", "error": str(exc)}
+            return {"source_id": source_id, "status": "error", "error": str(exc), "robots_source": robots_source}
 
     if resp.status_code == 304:
         # FR-201: 304 is recorded; zero further work — no parse, no insert.
-        return {"source_id": source_id, "status": "not_modified"}
+        return {"source_id": source_id, "status": "not_modified", "robots_source": robots_source}
 
     if resp.status_code != 200:
-        return {"source_id": source_id, "status": "error", "error": f"HTTP {resp.status_code}"}
+        return {
+            "source_id": source_id,
+            "status": "error",
+            "error": f"HTTP {resp.status_code}",
+            "robots_source": robots_source,
+        }
 
     return {
         "source_id": source_id,
@@ -177,6 +219,7 @@ async def _fetch_one(
         "etag": resp.headers.get("ETag"),
         "last_modified": resp.headers.get("Last-Modified"),
         "body": resp.content,
+        "robots_source": robots_source,
     }
 
 
@@ -214,7 +257,7 @@ def _process_entries(
             continue
 
         published_at, inferred = normalize_timestamp(entry, fetched_at_dt)
-        snippet = _clean_snippet(entry.get("summary"))
+        snippet = derive_snippet(entry.get("summary"), title) or None
         author = entry.get("author")
 
         cur = conn.execute(
@@ -282,7 +325,7 @@ async def ingest_once(
     async with httpx.AsyncClient(follow_redirects=True) as client:
         results = await asyncio.gather(
             *(
-                _fetch_one(client, src, semaphore, last_request_at, host_locks, robots_cache, robots_locks)
+                _fetch_one(conn, client, src, semaphore, last_request_at, host_locks, robots_cache, robots_locks)
                 for src in sources
             )
         )
@@ -298,12 +341,20 @@ async def ingest_once(
         "entries_seen": 0,
         "articles_inserted": 0,
         "duplicates_skipped": 0,
+        "robots_cache_hits": 0,
+        "robots_fetches": 0,
     }
     errors: list[str] = []
 
     for result, src in zip(results, sources):
         source_id = src["id"]
         status = result["status"]
+
+        robots_source = result.get("robots_source")
+        if robots_source == "cache":
+            counts["robots_cache_hits"] += 1
+        elif robots_source == "fetch":
+            counts["robots_fetches"] += 1
 
         if status == "ok":
             try:

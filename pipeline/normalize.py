@@ -1,26 +1,33 @@
 """Pure normalization functions. No network, no database."""
 
+import re
 from datetime import datetime, timedelta, timezone
+from html.parser import HTMLParser
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from dateutil import parser as dateutil_parser
 
-# FR-207: query params stripped during canonicalization
-_TRACKING_PREFIXES = ("utm_",)
-_TRACKING_EXACT = {"fbclid", "gclid", "mc_cid", "mc_eid", "ref", "source"}
+import config
 
-# FR-207: known redirect wrapper hosts, resolved one level via a query param
-_WRAPPER_HOSTS = {"news.google.com", "feedproxy.google.com"}
-_WRAPPER_URL_PARAM_NAMES = ("url", "u", "q")
+# FR-204 vs NFR-602/AC-10 (see DECISIONS.md): a feed <description> may contain
+# the entire article rather than a publisher-authored summary. Bounding to 2
+# sentences / 300 chars, whichever is shorter, makes the result structurally
+# incapable of being "the article body" regardless of what was stuffed in.
+_SNIPPET_MAX_SENTENCES = 2
+_SNIPPET_MAX_CHARS = 300
+_SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?])\s+(?=[A-Z])")
 
-# FR-207: hosts known to serve HTTPS reliably; http is upgraded only for these.
-# Conservative default of wrapper hosts only — forcing https on an arbitrary
-# feed host risks pointing at a URL that doesn't exist.
-_KNOWN_HTTPS_HOSTS = {"news.google.com", "feedproxy.google.com"}
 
-# FR-206: a parsed timestamp further than this into the future is treated as
-# a feed bug, not fact, and triggers the fetched_at fallback.
-_FUTURE_TOLERANCE_H = 48
+class _TagStripper(HTMLParser):
+    def __init__(self):
+        super().__init__()
+        self._parts: list[str] = []
+
+    def handle_data(self, data: str) -> None:
+        self._parts.append(data)
+
+    def get_text(self) -> str:
+        return "".join(self._parts)
 
 
 def canonicalize_url(url: str) -> str:
@@ -31,10 +38,10 @@ def canonicalize_url(url: str) -> str:
     netloc = parts.netloc.lower()
 
     # one level of known redirect wrapper resolution
-    if host in _WRAPPER_HOSTS:
+    if host in config.WRAPPER_HOSTS:
         query_pairs = parse_qsl(parts.query, keep_blank_values=True)
         for name, value in query_pairs:
-            if name in _WRAPPER_URL_PARAM_NAMES and value.startswith(("http://", "https://")):
+            if name in config.WRAPPER_URL_PARAM_NAMES and value.startswith(("http://", "https://")):
                 return canonicalize_url(value)
 
     scheme = parts.scheme.lower()
@@ -46,11 +53,11 @@ def canonicalize_url(url: str) -> str:
     filtered = [
         (k, v)
         for k, v in query_pairs
-        if not k.lower().startswith(_TRACKING_PREFIXES) and k.lower() not in _TRACKING_EXACT
+        if not k.lower().startswith(config.TRACKING_PREFIXES) and k.lower() not in config.TRACKING_EXACT
     ]
     query = urlencode(filtered)
 
-    if scheme == "http" and host in _KNOWN_HTTPS_HOSTS:
+    if scheme == "http" and host in config.KNOWN_HTTPS_HOSTS:
         scheme = "https"
 
     return urlunsplit((scheme, netloc, path, query, ""))
@@ -93,7 +100,35 @@ def normalize_timestamp(entry, fetched_at) -> tuple[str, bool]:
     if dt is None:
         return _fmt_utc(fetched_dt), True
 
-    if dt > fetched_dt + timedelta(hours=_FUTURE_TOLERANCE_H):
+    if dt > fetched_dt + timedelta(hours=config.FUTURE_TOLERANCE_H):
         return _fmt_utc(fetched_dt), True
 
     return _fmt_utc(dt), False
+
+
+# FR-204/NFR-602/AC-10: derive a genuine snippet from a feed-provided
+# description without ever storing article body text. See DECISIONS.md
+# ("FR-204 vs NFR-602: description-as-body") for the resolution this
+# implements. `title` is accepted per that resolution's signature but not
+# currently used to alter the result.
+def derive_snippet(raw_description: str | None, title: str) -> str:
+    if not raw_description:
+        return ""
+
+    stripper = _TagStripper()
+    stripper.feed(raw_description)
+    text = re.sub(r"\s+", " ", stripper.get_text()).strip()
+    if not text:
+        return ""
+
+    sentences = _SENTENCE_SPLIT_RE.split(text)
+    snippet = " ".join(sentences[:_SNIPPET_MAX_SENTENCES]).strip()
+
+    if len(snippet) <= _SNIPPET_MAX_CHARS:
+        return snippet
+
+    truncated = snippet[:_SNIPPET_MAX_CHARS]
+    last_space = truncated.rfind(" ")
+    if last_space > 0:
+        truncated = truncated[:last_space]
+    return truncated.rstrip()
