@@ -20,6 +20,7 @@ import json
 import sqlite3
 import sys
 import time
+import traceback
 from datetime import datetime, timezone
 
 import config
@@ -29,6 +30,21 @@ from pipeline.ingest import ingest_once, sync_sources
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+# NFR-402: an uncaught exception mid-run must still leave finished_at and a
+# traceback in run_log.errors before propagating — a run_log audit found 14
+# of 51 runs with no finished_at and no way to tell a code-level crash from
+# an external kill (e.g. Task Scheduler's ExecutionTimeLimit, or a session
+# interruption under the Interactive-logon task). This makes a real crash
+# leave evidence; it does not change what happens to genuine kills, which
+# still leave no finished_at because nothing gets to run.
+def _record_crash(conn: sqlite3.Connection, run_id: int) -> None:
+    conn.execute(
+        "UPDATE run_log SET finished_at=?, errors=? WHERE id=?",
+        (_now_iso(), traceback.format_exc(), run_id),
+    )
+    conn.commit()
 
 
 # --dry-run: fetches and parses but writes nothing. Reads (never writes) any
@@ -85,41 +101,47 @@ async def run(dry_run: bool = False) -> int:
         print(f"[run] FATAL: database unwritable: {exc}", file=sys.stderr)
         return 1
 
-    if dry_run:
-        sources = _dry_run_sources(conn, feeds)
-    else:
-        rows = conn.execute(
-            "SELECT id, feed_url, etag, last_modified FROM source WHERE enabled = 1"
-        ).fetchall()
-        sources = [dict(row) for row in rows]
+    try:
+        if dry_run:
+            sources = _dry_run_sources(conn, feeds)
+        else:
+            rows = conn.execute(
+                "SELECT id, feed_url, etag, last_modified FROM source WHERE enabled = 1"
+            ).fetchall()
+            sources = [dict(row) for row in rows]
 
-    t_stage = time.perf_counter()
-    counts, errors = await ingest_once(conn, sources, dry_run=dry_run)
-    fetch_elapsed = time.perf_counter() - t_stage
-    print(
-        f"[run] ingest: {counts['feeds_attempted']} attempted, "
-        f"{counts['status_200']} x200, {counts['status_304']} x304, "
-        f"{counts['skipped_robots']} skipped(robots), {counts['failures']} failed "
-        f"({fetch_elapsed:.2f}s)"
-    )
-    print(
-        f"[run] articles: {counts['entries_seen']} seen, "
-        f"{counts['articles_inserted']} inserted, {counts['duplicates_skipped']} duplicates"
-    )
-    print(
-        f"[run] robots.txt: {counts['robots_cache_hits']} cache hits, "
-        f"{counts['robots_fetches']} fetches"
-    )
-
-    if dry_run:
-        conn.rollback()
-    else:
-        conn.commit()
-        conn.execute(
-            "UPDATE run_log SET finished_at=?, stage_counts=?, errors=? WHERE id=?",
-            (_now_iso(), json.dumps(counts), json.dumps(errors) if errors else None, run_id),
+        t_stage = time.perf_counter()
+        counts, errors = await ingest_once(conn, sources, dry_run=dry_run)
+        fetch_elapsed = time.perf_counter() - t_stage
+        print(
+            f"[run] ingest: {counts['feeds_attempted']} attempted, "
+            f"{counts['status_200']} x200, {counts['status_304']} x304, "
+            f"{counts['skipped_robots']} skipped(robots), {counts['failures']} failed "
+            f"({fetch_elapsed:.2f}s)"
         )
-        conn.commit()
+        print(
+            f"[run] articles: {counts['entries_seen']} seen, "
+            f"{counts['articles_inserted']} inserted, {counts['duplicates_skipped']} duplicates"
+        )
+        print(
+            f"[run] robots.txt: {counts['robots_cache_hits']} cache hits, "
+            f"{counts['robots_fetches']} fetches"
+        )
+
+        if dry_run:
+            conn.rollback()
+        else:
+            conn.commit()
+            conn.execute(
+                "UPDATE run_log SET finished_at=?, stage_counts=?, errors=? WHERE id=?",
+                (_now_iso(), json.dumps(counts), json.dumps(errors) if errors else None, run_id),
+            )
+            conn.commit()
+    except Exception:
+        if run_id is not None:
+            _record_crash(conn, run_id)
+        conn.close()
+        raise
 
     conn.close()
 
