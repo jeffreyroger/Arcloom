@@ -32,9 +32,9 @@ FAIL_STREAK_LIMIT = 20
 # FR-203: robots.txt cache TTL, hours.
 ROBOTS_CACHE_TTL_H = 24
 
-# FR-202: truthful, contactable User-Agent. Fill in the real repo URL before
-# deploying — must not impersonate a browser or another crawler.
-USER_AGENT = "ArcLoom/0.1 (+https://github.com/<placeholder>/arcloom)"
+# FR-202: truthful, contactable User-Agent — must not impersonate a browser
+# or another crawler.
+USER_AGENT = "ArcLoom/0.1 (+https://github.com/jeffreyroger/Arcloom)"
 
 # --- Operational settings (NFR-503: centralized here; not G5 tunables —
 # these are timeouts/tolerances, not quality-affecting thresholds, so no
