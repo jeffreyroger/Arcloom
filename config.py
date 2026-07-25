@@ -13,9 +13,11 @@ FEEDS_PATH = Path(__file__).parent / "feeds.yaml"
 
 # FR-503: active window for candidate clusters (also used to bound article
 # retention windows during ingestion). Default per SRS §5; sweep is W3's job.
+# Defined week 1, first used week 2 (clustering).
 ACTIVE_WINDOW_H = 72
 
 # NFR-301: retention window for articles before pruning eligibility.
+# Defined week 1, first used week 2 (clustering).
 RETENTION_D = 400
 
 # FR-205: per-host politeness delay, seconds.
@@ -33,6 +35,39 @@ ROBOTS_CACHE_TTL_H = 24
 # FR-202: truthful, contactable User-Agent. Fill in the real repo URL before
 # deploying — must not impersonate a browser or another crawler.
 USER_AGENT = "ArcLoom/0.1 (+https://github.com/<placeholder>/arcloom)"
+
+# --- Operational settings (NFR-503: centralized here; not G5 tunables —
+# these are timeouts/tolerances, not quality-affecting thresholds, so no
+# measurement plan is required for them) ---
+
+# FR-201/FR-203: HTTP client timeout, seconds. Shared by feed fetches,
+# robots.txt fetches (pipeline/ingest.py) and feeds.yaml pre-flight checks
+# (tools/validate_feeds.py) — one value, not two redundant ones.
+FETCH_TIMEOUT_S = 10.0
+
+# FR-206: a parsed article timestamp further into the future than this is
+# treated as a feed bug, not fact, and triggers the fetched_at fallback.
+FUTURE_TOLERANCE_H = 48
+
+# tools/validate_feeds.py: a feed whose newest entry is older than this is
+# flagged dead in the pre-flight report.
+STALE_DAYS = 30
+
+# --- Static reference data (NFR-503: centralized here; not G5 tunables —
+# lists of known hosts/params, not thresholds) ---
+
+# FR-207: query params stripped during URL canonicalization.
+TRACKING_PREFIXES = ("utm_",)
+TRACKING_EXACT = {"fbclid", "gclid", "mc_cid", "mc_eid", "ref", "source"}
+
+# FR-207: known redirect wrapper hosts, resolved one level via a query param.
+WRAPPER_HOSTS = {"news.google.com", "feedproxy.google.com"}
+WRAPPER_URL_PARAM_NAMES = ("url", "u", "q")
+
+# FR-207: hosts known to serve HTTPS reliably; http is upgraded only for
+# these. Conservative default of wrapper hosts only — forcing https on an
+# arbitrary feed host risks pointing at a URL that doesn't exist.
+KNOWN_HTTPS_HOSTS = {"news.google.com", "feedproxy.google.com"}
 
 # --- Not live until later weeks ---
 

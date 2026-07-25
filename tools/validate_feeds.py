@@ -24,8 +24,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import config  # noqa: E402
 
 FEEDS_PATH = Path(__file__).resolve().parent.parent / "feeds.yaml"
-TIMEOUT_S = 10.0
-STALE_DAYS = 30
 
 
 def _host(url: str) -> str:
@@ -76,7 +74,7 @@ def validate_feed(entry: dict, client: httpx.Client) -> dict:
         or bozo
         or entry_count == 0
         or days_since_newest is None
-        or days_since_newest > STALE_DAYS
+        or days_since_newest > config.STALE_DAYS
     )
 
     return {
@@ -115,7 +113,7 @@ def main() -> int:
     results = []
     last_request_at: dict[str, float] = {}
 
-    with httpx.Client(follow_redirects=True, timeout=TIMEOUT_S) as client:
+    with httpx.Client(follow_redirects=True, timeout=config.FETCH_TIMEOUT_S) as client:
         for entry in feeds:
             host = _host(entry["url"])
             last = last_request_at.get(host)
