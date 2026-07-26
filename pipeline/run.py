@@ -32,21 +32,6 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-# NFR-402: an uncaught exception mid-run must still leave finished_at and a
-# traceback in run_log.errors before propagating — a run_log audit found 14
-# of 51 runs with no finished_at and no way to tell a code-level crash from
-# an external kill (e.g. Task Scheduler's ExecutionTimeLimit, or a session
-# interruption under the Interactive-logon task). This makes a real crash
-# leave evidence; it does not change what happens to genuine kills, which
-# still leave no finished_at because nothing gets to run.
-def _record_crash(conn: sqlite3.Connection, run_id: int) -> None:
-    conn.execute(
-        "UPDATE run_log SET finished_at=?, errors=? WHERE id=?",
-        (_now_iso(), traceback.format_exc(), run_id),
-    )
-    conn.commit()
-
-
 # --dry-run: fetches and parses but writes nothing. Reads (never writes) any
 # existing source row by feed_url so conditional GET is still exercised.
 def _dry_run_sources(conn: sqlite3.Connection, feeds: list[dict]) -> list[dict]:
@@ -101,6 +86,9 @@ async def run(dry_run: bool = False) -> int:
         print(f"[run] FATAL: database unwritable: {exc}", file=sys.stderr)
         return 1
 
+    counts = None
+    errors: list[str] = []
+    run_ok = False
     try:
         if dry_run:
             sources = _dry_run_sources(conn, feeds)
@@ -132,18 +120,51 @@ async def run(dry_run: bool = False) -> int:
             conn.rollback()
         else:
             conn.commit()
+        run_ok = True
+
+    # NFR-402: an operator-requested stop (Ctrl+C, or SystemExit from e.g. a
+    # signal handler). Recorded distinctly from a crash — "interrupted:
+    # <type>", never a traceback — and then re-raised: the operator asked the
+    # process to stop, so we must actually let it stop, not swallow this and
+    # return as if everything were fine.
+    except (KeyboardInterrupt, SystemExit) as exc:
+        print(f"[run] INTERRUPTED: {type(exc).__name__}", file=sys.stderr)
+        if not dry_run and run_id is not None:
             conn.execute(
-                "UPDATE run_log SET finished_at=?, stage_counts=?, errors=? WHERE id=?",
+                "UPDATE run_log SET finished_at=?, errors=? WHERE id=? AND errors IS NULL",
+                (_now_iso(), f"interrupted: {type(exc).__name__}", run_id),
+            )
+            conn.commit()
+        raise
+
+    # NFR-402: a genuine crash. Record the traceback so it reads differently
+    # from both a clean run and an operator interrupt in run_log, then exit
+    # non-zero (visible in Task Scheduler's LastTaskResult) rather than
+    # re-raising — one failed run must not take down the 15-minute schedule
+    # for every run after it.
+    except Exception:
+        print(f"[run] CRASH:\n{traceback.format_exc()}", file=sys.stderr)
+        if not dry_run and run_id is not None:
+            conn.execute(
+                "UPDATE run_log SET finished_at=?, errors=? WHERE id=? AND errors IS NULL",
+                (_now_iso(), traceback.format_exc(), run_id),
+            )
+            conn.commit()
+        return 1
+
+    finally:
+        # Only the clean-completion path (run_ok) writes here. The
+        # "AND errors IS NULL" guard is what keeps this from ever
+        # overwriting a traceback or interrupt marker already written by
+        # either except branch above — both run before this, in all cases
+        # (return, raise, or falling through).
+        if run_ok and not dry_run and run_id is not None:
+            conn.execute(
+                "UPDATE run_log SET finished_at=?, stage_counts=?, errors=? WHERE id=? AND errors IS NULL",
                 (_now_iso(), json.dumps(counts), json.dumps(errors) if errors else None, run_id),
             )
             conn.commit()
-    except Exception:
-        if run_id is not None:
-            _record_crash(conn, run_id)
         conn.close()
-        raise
-
-    conn.close()
 
     total_elapsed = time.perf_counter() - t_start
     suffix = " (dry-run, nothing written)" if dry_run else ""

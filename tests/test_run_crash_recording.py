@@ -16,9 +16,10 @@ def _make_db(tmp_path):
 
 @pytest.mark.asyncio
 async def test_uncaught_exception_records_finished_at_and_traceback(monkeypatch, tmp_path):
-    # NFR-402: an uncaught exception mid-run must still leave finished_at and
-    # a traceback in run_log.errors, not a silent gap with no way to tell a
-    # real crash from an external kill.
+    # NFR-402 branch 2 (genuine crash): finished_at + full traceback in
+    # run_log.errors, and the run exits non-zero rather than re-raising — a
+    # single failed run must not take down the 15-minute schedule for every
+    # run after it.
     path, connect = _make_db(tmp_path)
     monkeypatch.setattr(run_module.db, "get_connection", connect)
     monkeypatch.setattr(run_module.config, "load_feeds", lambda: [])
@@ -28,14 +29,86 @@ async def test_uncaught_exception_records_finished_at_and_traceback(monkeypatch,
 
     monkeypatch.setattr(run_module, "ingest_once", boom)
 
-    with pytest.raises(_BoomError):
-        await run_module.run(dry_run=False)
+    result = await run_module.run(dry_run=False)
 
+    assert result == 1
     conn = sqlite3.connect(path)
     row = conn.execute("SELECT finished_at, errors FROM run_log ORDER BY id DESC LIMIT 1").fetchone()
     assert row[0] is not None
     assert "simulated crash" in row[1]
     assert "Traceback" in row[1]
+
+
+@pytest.mark.asyncio
+async def test_keyboard_interrupt_records_marker_and_propagates(monkeypatch, tmp_path):
+    # NFR-402 branch 1 (operator-requested stop): recorded distinctly from a
+    # crash ("interrupted: <type>", never a traceback), and the exception
+    # MUST still propagate — the operator asked the process to stop, so
+    # swallowing this and returning normally would be wrong.
+    path, connect = _make_db(tmp_path)
+    monkeypatch.setattr(run_module.db, "get_connection", connect)
+    monkeypatch.setattr(run_module.config, "load_feeds", lambda: [])
+
+    async def interrupt(*args, **kwargs):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(run_module, "ingest_once", interrupt)
+
+    with pytest.raises(KeyboardInterrupt):
+        await run_module.run(dry_run=False)
+
+    conn = sqlite3.connect(path)
+    row = conn.execute("SELECT finished_at, errors FROM run_log ORDER BY id DESC LIMIT 1").fetchone()
+    assert row[0] is not None
+    assert row[1] == "interrupted: KeyboardInterrupt"
+
+
+@pytest.mark.asyncio
+async def test_system_exit_records_marker_and_propagates(monkeypatch, tmp_path):
+    # Same distinct-interrupt handling for SystemExit as for KeyboardInterrupt
+    # — both are BaseException subclasses that `except Exception` would miss.
+    path, connect = _make_db(tmp_path)
+    monkeypatch.setattr(run_module.db, "get_connection", connect)
+    monkeypatch.setattr(run_module.config, "load_feeds", lambda: [])
+
+    async def exit_now(*args, **kwargs):
+        raise SystemExit(1)
+
+    monkeypatch.setattr(run_module, "ingest_once", exit_now)
+
+    with pytest.raises(SystemExit):
+        await run_module.run(dry_run=False)
+
+    conn = sqlite3.connect(path)
+    row = conn.execute("SELECT finished_at, errors FROM run_log ORDER BY id DESC LIMIT 1").fetchone()
+    assert row[0] is not None
+    assert row[1] == "interrupted: SystemExit"
+
+
+@pytest.mark.asyncio
+async def test_finally_does_not_clobber_an_already_recorded_crash(monkeypatch, tmp_path):
+    # The finally block's "completed" write must be guarded so it can never
+    # overwrite a traceback (or interrupt marker) an except branch already
+    # wrote — otherwise evidence of the actual failure would be replaced by
+    # a false "completed" state.
+    path, connect = _make_db(tmp_path)
+    monkeypatch.setattr(run_module.db, "get_connection", connect)
+    monkeypatch.setattr(run_module.config, "load_feeds", lambda: [])
+
+    async def boom(*args, **kwargs):
+        raise _BoomError("simulated crash")
+
+    monkeypatch.setattr(run_module, "ingest_once", boom)
+
+    result = await run_module.run(dry_run=False)
+
+    assert result == 1
+    conn = sqlite3.connect(path)
+    row = conn.execute("SELECT stage_counts, errors FROM run_log ORDER BY id DESC LIMIT 1").fetchone()
+    assert row[0] is None  # never set by the crash branch
+    assert "simulated crash" in row[1]
+    assert "Traceback" in row[1]
+    assert row[1] != "completed"
 
 
 @pytest.mark.asyncio
