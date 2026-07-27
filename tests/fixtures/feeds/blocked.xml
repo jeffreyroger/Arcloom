@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0">
+  <channel>
+    <title>Blocked Feed</title>
+    <link>https://example.com/</link>
+    <description>Fixture feed for Arc Loom ingestion tests.</description>
+    <item>
+      <title>Blocked Story 1</title>
+      <link>https://example.com/blocked/1</link>
+      <guid>https://example.com/blocked/1</guid>
+      <pubDate>Mon, 27 Jul 2026 12:00:00 +0000</pubDate>
+      <description>A short summary of the story.</description>
+    </item>
+    <item>
+      <title>Blocked Story 2</title>
+      <link>https://example.com/blocked/2</link>
+      <guid>https://example.com/blocked/2</guid>
+      <pubDate>Mon, 27 Jul 2026 11:00:00 +0000</pubDate>
+      <description>A short summary of the story.</description>
+    </item>
+    <item>
+      <title>Blocked Story 3</title>
+      <link>https://example.com/blocked/3</link>
+      <guid>https://example.com/blocked/3</guid>
+      <pubDate>Mon, 27 Jul 2026 10:00:00 +0000</pubDate>
+      <description>A short summary of the story.</description>
+    </item>
+  </channel>
+</rss>

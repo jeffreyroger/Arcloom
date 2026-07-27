@@ -1,0 +1,62 @@
+# FR-101/FR-102: parallel feed configuration pointing at tools/mock_feed_server.py
+# fixture endpoints, for deterministic ingestion testing without hammering real
+# publishers. Load with `python -m pipeline.run --feeds feeds.mock.yaml` while
+# `python tools/mock_feed_server.py` is running on the default port (8765).
+
+feeds:
+  - name: "Mock Normal"
+    url: "http://127.0.0.1:8765/normal.xml"
+    packs: ["general-tech"]
+
+  - name: "Mock Atom"
+    url: "http://127.0.0.1:8765/atom.xml"
+    packs: ["general-tech"]
+
+  - name: "Mock Etag"
+    url: "http://127.0.0.1:8765/etag.xml"
+    packs: ["general-tech"]
+
+  - name: "Mock Last-Modified"
+    url: "http://127.0.0.1:8765/lastmod.xml"
+    packs: ["general-tech"]
+
+  - name: "Mock Full Body"
+    url: "http://127.0.0.1:8765/fullbody.xml"
+    packs: ["general-tech"]
+
+  - name: "Mock Empty"
+    url: "http://127.0.0.1:8765/empty.xml"
+    packs: ["general-tech"]
+
+  - name: "Mock Stale"
+    url: "http://127.0.0.1:8765/stale.xml"
+    packs: ["general-tech"]
+
+  - name: "Mock Malformed"
+    url: "http://127.0.0.1:8765/malformed.xml"
+    packs: ["general-tech"]
+
+  - name: "Mock Forbidden"
+    url: "http://127.0.0.1:8765/403"
+    packs: ["general-tech"]
+
+  - name: "Mock Not Found"
+    url: "http://127.0.0.1:8765/404"
+    packs: ["general-tech"]
+
+  - name: "Mock Slow"
+    url: "http://127.0.0.1:8765/slow"
+    packs: ["general-tech"]
+
+  - name: "Mock Blocked (robots.txt)"
+    url: "http://127.0.0.1:8765/blocked.xml"
+    packs: ["general-tech"]
+
+  - name: "Mock Dupes"
+    url: "http://127.0.0.1:8765/dupes.xml"
+    packs: ["general-tech"]
+
+  # --- Intentional canary — mirrors feeds.yaml's Broken Feed Canary ---
+  - name: "Mock Invalid Host Canary"
+    url: "https://mock.invalid.example/feed.xml"
+    packs: ["general-tech"]

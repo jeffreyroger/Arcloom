@@ -22,6 +22,7 @@ import sys
 import time
 import traceback
 from datetime import datetime, timezone
+from pathlib import Path
 
 import config
 import db
@@ -56,12 +57,12 @@ def _dry_run_sources(conn: sqlite3.Connection, feeds: list[dict]) -> list[dict]:
     return sources
 
 
-async def run(dry_run: bool = False) -> int:
+async def run(dry_run: bool = False, feeds_path=None) -> int:
     t_start = time.perf_counter()
 
     # Total failure #1: config unreadable.
     try:
-        feeds = config.load_feeds()
+        feeds = config.load_feeds(feeds_path) if feeds_path else config.load_feeds()
     except Exception as exc:
         print(f"[run] FATAL: could not load feeds.yaml: {exc}", file=sys.stderr)
         return 1
@@ -185,8 +186,16 @@ def main() -> int:
         action="store_true",
         help="Fetch and parse feeds but write nothing to the database",
     )
+    # FR-101: config-driven feeds — testing affordance so tools/mock_feed_server.py
+    # (feeds.mock.yaml) can be exercised without touching the real feeds.yaml.
+    parser.add_argument(
+        "--feeds",
+        type=Path,
+        default=None,
+        help="Alternate feeds config path (default: feeds.yaml)",
+    )
     args = parser.parse_args()
-    return asyncio.run(run(dry_run=args.dry_run))
+    return asyncio.run(run(dry_run=args.dry_run, feeds_path=args.feeds))
 
 
 if __name__ == "__main__":

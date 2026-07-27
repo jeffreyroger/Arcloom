@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0">
+  <channel>
+    <title>Stale Feed</title>
+    <link>https://example.com/</link>
+    <description>Fixture feed for Arc Loom ingestion tests.</description>
+    <item>
+      <title>Stale Story</title>
+      <link>https://example.com/stale/1</link>
+      <guid>https://example.com/stale/1</guid>
+      <pubDate>Sun, 22 Jun 2025 12:00:00 +0000</pubDate>
+      <description>A short summary of the story.</description>
+    </item>
+  </channel>
+</rss>

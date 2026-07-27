@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <title>Atom Feed</title>
+  <link href="https://example.com/"/>
+  <id>https://example.com/atom-feed</id>
+  <updated>2026-07-27T12:00:00Z</updated>
+  <entry>
+    <title>Atom Story 1</title>
+    <link href="https://example.com/atom/1"/>
+    <id>https://example.com/atom/1</id>
+    <updated>2026-07-27T12:00:00Z</updated>
+    <summary>A short atom summary.</summary>
+  </entry>
+  <entry>
+    <title>Atom Story 2</title>
+    <link href="https://example.com/atom/2"/>
+    <id>https://example.com/atom/2</id>
+    <updated>2026-07-27T05:00:00Z</updated>
+    <summary>A short atom summary.</summary>
+  </entry>
+  <entry>
+    <title>Atom Story 3</title>
+    <link href="https://example.com/atom/3"/>
+    <id>https://example.com/atom/3</id>
+    <updated>2026-07-26T22:00:00Z</updated>
+    <summary>A short atom summary.</summary>
+  </entry>
+  <entry>
+    <title>Atom Story 4</title>
+    <link href="https://example.com/atom/4"/>
+    <id>https://example.com/atom/4</id>
+    <updated>2026-07-26T15:00:00Z</updated>
+    <summary>A short atom summary.</summary>
+  </entry>
+  <entry>
+    <title>Atom Story 5</title>
+    <link href="https://example.com/atom/5"/>
+    <id>https://example.com/atom/5</id>
+    <updated>2026-07-26T08:00:00Z</updated>
+    <summary>A short atom summary.</summary>
+  </entry>
+</feed>
