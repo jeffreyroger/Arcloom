@@ -57,7 +57,7 @@ def _dry_run_sources(conn: sqlite3.Connection, feeds: list[dict]) -> list[dict]:
     return sources
 
 
-async def run(dry_run: bool = False, feeds_path=None) -> int:
+async def run(dry_run: bool = False, feeds_path=None, db_path=None) -> int:
     t_start = time.perf_counter()
 
     # Total failure #1: config unreadable.
@@ -71,7 +71,7 @@ async def run(dry_run: bool = False, feeds_path=None) -> int:
     # Total failure #2: database unwritable.
     run_id = None
     try:
-        conn = db.get_connection()
+        conn = db.get_connection(db_path) if db_path else db.get_connection()
         conn.row_factory = sqlite3.Row
         db.init_schema(conn)
 
@@ -194,8 +194,16 @@ def main() -> int:
         default=None,
         help="Alternate feeds config path (default: feeds.yaml)",
     )
+    # tools/accelerated_soak.py: run against a separate soak.db so soak testing
+    # never touches production data.
+    parser.add_argument(
+        "--db",
+        type=Path,
+        default=None,
+        help="Alternate database path (default: arcloom.db)",
+    )
     args = parser.parse_args()
-    return asyncio.run(run(dry_run=args.dry_run, feeds_path=args.feeds))
+    return asyncio.run(run(dry_run=args.dry_run, feeds_path=args.feeds, db_path=args.db))
 
 
 if __name__ == "__main__":

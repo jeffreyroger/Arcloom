@@ -3,6 +3,7 @@
 # declared now so the surface is visible, but MUST NOT be read by any week-1
 # code path.
 
+import os
 from pathlib import Path
 
 import yaml
@@ -29,8 +30,11 @@ MAX_CONCURRENCY = 8
 # FR-104: consecutive parse failures before a feed is flagged degraded.
 FAIL_STREAK_LIMIT = 20
 
-# FR-203: robots.txt cache TTL, hours.
-ROBOTS_CACHE_TTL_H = 24
+# FR-203: robots.txt cache TTL, hours. Overridable via ARCLOOM_ROBOTS_CACHE_TTL_H
+# so tools/accelerated_soak.py can force the cache-expiry-and-refetch path
+# within a short soak run instead of waiting 24h for it to occur naturally.
+# Production default is unchanged at 24.
+ROBOTS_CACHE_TTL_H = float(os.environ.get("ARCLOOM_ROBOTS_CACHE_TTL_H", 24))
 
 # FR-202: truthful, contactable User-Agent — must not impersonate a browser
 # or another crawler.
