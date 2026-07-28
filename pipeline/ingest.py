@@ -85,21 +85,25 @@ async def _wait_for_host(host: str, last_request_at: dict, host_locks: dict) -> 
         last_request_at[host] = time.monotonic()
 
 
-# FR-203: fetch robots.txt for a host over the network. Failure (network
-# error or HTTP >=400) is treated as allowed, and logged — never cached, so
-# the next run retries rather than permanently trusting a transient failure.
-async def _fetch_robots_body(client: httpx.AsyncClient, scheme: str, host: str) -> str | None:
-    robots_url = f"{scheme}://{host}/robots.txt"
+# FR-203: fetch robots.txt for a host over the network. `netloc` (not just
+# hostname) so a feed on a non-default port gets its own origin's robots.txt
+# rather than silently requesting port 80/443 and treating the resulting
+# failure as allowed — caught by tools/accelerated_soak.py exercising the
+# mock feed server on port 8765. Failure (network error or HTTP >=400) is
+# treated as allowed, and logged — never cached, so the next run retries
+# rather than permanently trusting a transient failure.
+async def _fetch_robots_body(client: httpx.AsyncClient, scheme: str, netloc: str) -> str | None:
+    robots_url = f"{scheme}://{netloc}/robots.txt"
     try:
         resp = await client.get(
             robots_url, headers={"User-Agent": config.USER_AGENT}, timeout=config.FETCH_TIMEOUT_S
         )
     except httpx.HTTPError as exc:
-        print(f"[ingest] robots.txt fetch failed for {host}: {exc}; treating as allowed")
+        print(f"[ingest] robots.txt fetch failed for {netloc}: {exc}; treating as allowed")
         return None
 
     if resp.status_code >= 400:
-        print(f"[ingest] robots.txt fetch failed for {host}: HTTP {resp.status_code}; treating as allowed")
+        print(f"[ingest] robots.txt fetch failed for {netloc}: HTTP {resp.status_code}; treating as allowed")
         return None
 
     return resp.text
@@ -136,8 +140,14 @@ async def _robots_allowed(
     lock = robots_locks.setdefault(host, asyncio.Lock())
 
     async with lock:
+        # A hit here means this call did zero work regardless of how the
+        # entry first got populated (this run's own DB read or network
+        # fetch) -- it must report "cache", not the original caller's
+        # source, or every within-run reuse of a freshly-fetched host would
+        # be misreported as a fetch in stage_counts.
         if host in robots_cache:
-            rp, source = robots_cache[host]
+            rp = robots_cache[host]
+            source = "cache"
         else:
             row = conn.execute(
                 "SELECT body, fetched_at FROM robots_cache WHERE host = ?", (host,)
@@ -146,7 +156,7 @@ async def _robots_allowed(
                 rp = _parse_robots(row[0])
                 source = "cache"
             else:
-                body = await _fetch_robots_body(client, parts.scheme, host)
+                body = await _fetch_robots_body(client, parts.scheme, parts.netloc)
                 source = "fetch"
                 if body is not None:
                     conn.execute(
@@ -160,7 +170,7 @@ async def _robots_allowed(
                     rp = _parse_robots(body)
                 else:
                     rp = None
-            robots_cache[host] = (rp, source)
+            robots_cache[host] = rp
 
     allowed = True if rp is None else rp.can_fetch(config.USER_AGENT, url)
     return allowed, source
