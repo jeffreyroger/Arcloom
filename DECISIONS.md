@@ -153,3 +153,136 @@ confidence it hadn't earned:
 
 The corrected soak was re-run in full (120 runs); its honest results are
 recorded in the "substitute evidence" section above.
+
+## Week 1 retrospective
+
+**Final feed set: 25 configured, 17 alive, 4 blocked (robots.txt), 4 disabled (dead/stale/empty).**
+
+| Pack | Alive | Blocked | Disabled |
+|---|---|---|---|
+| ai-research | 3 | 2 (arXiv cs.AI, arXiv cs.CL) | 2 (Google Research Blog — 851d stale; MIT News AI — HTTP 403) |
+| ai-industry | 5 | 1 (The Register) | 1 (VentureBeat AI — 70d stale) |
+| general-tech | 6 | 1 (The Register, dual-tagged) | 0 |
+| tech-policy | 5 | 0 | 2 (Tech Policy Press — 0 entries; FTC Press Releases — HTTP 403) |
+
+(One deliberately-broken canary, "Broken Feed Canary," is excluded from this
+table by design — it must stay `enabled` to prove `degraded` status works,
+per week 1's done-criteria, and is neither a real alive nor a real dead
+feed.) 17 alive feeds is well short of the 60-80 deliverable target; see
+"the gap" below.
+
+**Sources excluded and why.** Two categories, both recorded as
+`disabled_reason` on the source itself rather than silently deleted from
+`feeds.yaml`, so the reason travels with the row instead of living only in
+a commit message:
+- **`blocked` (robots.txt Disallow: /)** — arXiv cs.AI, arXiv cs.CL, The
+  Register. These are legally unfetchable, not broken; `status='blocked'`
+  (added this week, see "defects fixed" below) keeps that distinct from
+  both `ok` and `degraded`.
+- **`disabled` (dead on inspection)** — Google Research Blog (newest entry
+  851 days old), MIT News AI (403), VentureBeat AI (newest entry 70 days
+  old), Tech Policy Press (200 OK, feed parses, 0 entries), FTC Press
+  Releases (403). All five were caught by the pre-flight
+  `tools/validate_feeds.py` run during closeout, not before — none of them
+  had been checked since being added.
+
+**Per-pack daily yield, before vs. after expansion** (from
+`tools/yield_analysis.py`'s 14-day backfill-excluded window; the four new
+tech-policy sources were only added 2026-07-28, so "after" is one partial
+day, not a clean 14-day comparison):
+
+| Pack | Before (mean/day, 07-15..07-27) | After (07-28, partial) |
+|---|---|---|
+| general-tech | ~24/day | 60 |
+| ai-industry | ~15/day | 65 |
+| tech-policy | ~0.85/day (EFF Deeplinks only) | 2 (backfill-excluded; +51 one-time backfill articles from the 4 new sources' first fetch) |
+| ai-research | ~0.08/day | 0 |
+
+tech-policy and ai-research remain effectively zero yield despite five
+`status='ok'` sources between them (UK CMA, EDPB, EPIC, Future of Privacy
+Forum, plus arXiv/DeepMind/Microsoft/BAIR on the research side) — the
+expansion added sources, not yet volume. This is the direct cause of
+criterion 3's failure below.
+
+**Every defect found and fixed this week:**
+1. **Body text via description field (FR-204 vs NFR-602/AC-10).**
+   `derive_snippet()` now bounds every stored snippet to 2 sentences or 300
+   chars, whichever is shorter, ending on a sentence/word boundary — a
+   semantic distinction (summary vs. body), not a length cap, since a
+   shorter cap is still body text truncated. `tools/migrate_snippets.py` /
+   `tools/check_ac10.py` re-bound and monitor existing rows. See the
+   "FR-204 vs NFR-602" entry above.
+2. **Feed removal not reconciled.** Removing a feed from `feeds.yaml` used
+   to require a manual DB patch. `sync_sources()` now reconciles both
+   directions: a removed feed is marked `disabled`/`enabled=0` (row kept
+   for article attribution), a re-added one has `disabled`/`blocked`
+   cleared back to `ok` without touching a real `degraded` status.
+3. **Robots.txt cache was in-memory only.** The process exits every 15
+   minutes, so an in-memory cache never let `ROBOTS_CACHE_TTL_H` apply
+   across runs. Persisted to the new `robots_cache` table, keyed by host.
+4. **Robots.txt fetch dropped non-default ports.** `_fetch_robots_body`
+   used the bare hostname instead of `netloc`, so a feed on a non-default
+   port fetched (or failed to fetch) the wrong origin's robots.txt.
+5. **Cache-hit accounting was wrong.** `robots_cache` attributed "cache" vs.
+   "fetch" to whichever call first populated the entry, so every
+   subsequent same-host lookup within a run was misreported as a fresh
+   fetch — meaning the soak's cache-expiry check would have passed
+   regardless of whether the TTL logic actually worked.
+6. **URL canonicalization over-stripped.** FR-207 lists `utm_*`, `fbclid`,
+   `gclid`, and fragment only. An earlier version also stripped `ref` and
+   `source`, which are load-bearing query params on some sites and could
+   collapse genuinely distinct URLs into one — a false-positive dedup that
+   would have corrupted week 2 clustering.
+7. **Interrupt vs. crash conflated (NFR-402), in two stages.** First pass:
+   an uncaught mid-run exception left `finished_at`/`errors` both NULL,
+   indistinguishable from an external kill — fixed by recording the
+   traceback before the exception re-propagates. Second pass: that fix
+   still used `except Exception`, which does not catch
+   `KeyboardInterrupt`/`SystemExit` (`BaseException`), so an operator
+   interrupt still left a blank row — the compliance sweep caught this
+   recurring at 44/119 gaps, a *higher* rate than before the first fix.
+   Resolved by splitting `run()` into three branches (interrupted / crash /
+   clean), each writing a distinct, non-overwritable marker.
+8. **Soak verdict table overstated three checks** (see the correction
+   entry above) — WAL check structurally incapable of failing, "DB growth"
+   mislabeled an idempotency check, and `run_log` had no retention story.
+   Fixed and re-run in full; `RUN_LOG_RETENTION_D` added.
+9. **Mock fixture dates were rotting.** Hardcoded calendar dates in
+   `tests/fixtures/feeds/*.xml` would have silently made `/normal.xml`
+   increasingly stale while its test kept passing. Fixture dates are now
+   rendered relative to request time.
+
+**The gap investigation and conclusion.** The interrupt/crash fix (item 7)
+left an unresolved residue: of 119 historical `run_log` gaps, only 1
+correlated with a real dev-time `^C` (per `logs/pipeline.log`); the other
+43 had zero trace anywhere — no traceback, no interrupt marker, nothing —
+and were hypothesized at the time to be Task Scheduler's
+`ExecutionTimeLimit` (10 minutes) hard-killing the process before any
+Python exception handler or even stdout flush could run, since a hard
+`TerminateProcess` bypasses all of Python's exception machinery.
+**This week's 3-hour, 13-run continuity window reproduced it live**: runs
+195 and 198 (of 191-203) each started, ran past 10 minutes, and were gone
+with no `finished_at`, no traceback, no interrupt marker, and no `python`
+process left running by the time they were checked — the exact signature
+the hypothesis predicted, caught in the act rather than inferred after the
+fact. Conclusion: confirmed root cause, **still unremediated** — 2 of 13
+runs (~15%) in this window hit it, which is a real reliability gap in
+NFR-402's crash/interrupt bookkeeping (a hard OS-level kill is invisible to
+both branches), not a fluke. Flagged for a fix in a future week: a
+startup-time sweep that finds `finished_at IS NULL` rows older than
+`ExecutionTimeLimit` and back-fills them with a `timed_out` marker, rather
+than leaving them permanently ambiguous.
+
+**Hours spent vs. the 10h budget.** Approximate, reconstructed from commit
+session clustering (not tracked time): ~1.5h initial pipeline + schema
+(2026-07-25 morning), ~2h on the first round of ingest fixes the same day,
+~2-3h across 2026-07-26/27 on the interrupt/crash fix and its regression
+(the compliance sweep that caught the recurrence), ~1h building the mock
+feed server, ~3-4h on 2026-07-28 for the accelerated soak harness, its
+self-correction, and the retroactive yield analysis, and ~2h this session
+on closeout (feed validation/cleanup, the real 3-hour continuity run, this
+retrospective). Total roughly **10-12h against a 10h budget** — over,
+consistent with G7 already having been invoked once this week (the
+accelerated-soak substitution was itself a budget-driven call: a genuine
+24h wall-clock soak was recognized as impractical within budget and
+replaced with compressed + retroactive evidence rather than deferred).

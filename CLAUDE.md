@@ -17,38 +17,56 @@ Arc Loom is a personal, open-source news system that tracks storylines over time
 | **G9** | Article body text is never fetched or stored. | Legal posture. Non-negotiable. |
 | **G10** | Weeks 3, 6 and 8 are **gates**. Do not begin the next week until the gate's number is measured and recorded, even if it is bad. | A bad measured number is progress. An unmeasured system is not. |
 
-## Current week: **Week 1 — Ingestion and schema**
+## Week 1 close state (recorded at handoff to week 2)
 
-**Goal:** Reliably pull 60–80 feeds into SQLite without losing or duplicating anything.
+17 alive feeds (against a 60-80 target — known, unremediated gap), 4
+robots-blocked, 4 disabled dead/stale/empty, 1 intentional broken canary.
+0 crashes over 13 real-scheduler runs in the closeout continuity window,
+but 2 of those 13 runs were silently killed by Task Scheduler's
+`ExecutionTimeLimit` with no crash/interrupt record — a confirmed,
+unremediated gap in NFR-402's bookkeeping (see DECISIONS.md "Week 1
+retrospective"). Full detail, defect list, and criteria verdicts in
+DECISIONS.md.
 
-**Time budget:** 10h (4h schema+config, 4h ingest, 2h hardening)
+## Standing rule: never edit the repo while the scheduled task is enabled
+
+The 15-minute ArcLoom scheduled task reads `feeds.yaml`/`config.py`/
+`pipeline/` and writes `arcloom.db` on every firing. Editing any of these
+while the task is enabled risks a read/write race with a live run and has
+been the source of every SIGINT in this project's history. Disable the
+task first (`Disable-ScheduledTask -TaskName ArcLoom`), make the change,
+then re-enable it — do not edit around a running cron.
+
+## Current week: **Week 2 — Embedding and event clustering**
+
+**Goal:** Articles collapse into event clusters. Quality unknown and that is fine this week.
+
+**Time budget:** 10h (2h embed, 4h cluster, 2h simhash, 2h render)
 
 **Deliverables**
-- `schema.sql` implementing the source/article tables from SRS §4 (those two only)
-- `feeds.yaml` with 60–80 AI-industry + tech-policy feeds, tagged into 3–4 packs
-- `pipeline/ingest.py` — conditional GET, robots.txt cache, per-host delay, concurrency cap
-- URL canonicalization and timestamp normalization with a unit test each
-- `run_log` writes on every run
-- Cron entry running every 15 minutes
+- `pipeline/embed.py` — `bge-small-en-v1.5`, CPU, batched, L2-normalized, stored as `float32` BLOB with model tag
+- `pipeline/simhash.py` — 64-bit over title trigrams, Hamming ≤ 3 bypass
+- `pipeline/cluster.py` — incremental single-pass centroid matching over a 72h active window
+- `cluster` and `article_cluster` tables
+- `pipeline/render.py` — Jinja2 → one `index.html`, cards showing canonical title, source count, links
 
 **Do NOT**
-- Embed anything
-- Cluster anything
-- Build any view, page, or template
-- Add more than 80 feeds
-- Write a retry/backoff framework — a fail-streak counter is enough
-- Use an async framework beyond `httpx` + `asyncio.gather` with a semaphore
+- Tune `TAU_EVENT` by eye. Set it to 0.75 and leave it. Tuning is week 3's job and requires the gold set.
+- Add HDBSCAN, DBSCAN, or any batch clustering library — incremental is a hard requirement (FR-502)
+- Style the HTML beyond legibility. No CSS framework.
+- Add pagination, filtering, sorting or search
+- Try a second embedding model "to compare" — that is a week 3 activity with a metric
 
 **Done when**
-- Pipeline runs 24 hours unattended with zero crashes
-- Running it twice back-to-back inserts zero new rows
-- `SELECT COUNT(*) FROM article` is between 500 and 2,000 after a day
-- At least one deliberately broken feed URL is in `feeds.yaml` and is correctly marked `degraded`
+- Every article has exactly one cluster
+- `index.html` renders the last 72 hours
+- A visibly wire-syndicated story shows a source count > 1
+- Full pipeline run completes in under 5 minutes (NFR-101)
 
 **Tripwires**
-- Writing a `Feed` class hierarchy → stop, use a dict
-- Adding a `content` or `body` column → violates G9
-- More than 90 minutes on timezone parsing → hardcode `dateutil.parser` fallback and move on
+- Adjusting `TAU_EVENT` more than once → you are eye-tuning; stop
+- Any time spent on CSS → cap at 30 minutes total
+- Considering GPU setup → unnecessary at this volume
 
 > Update this section (goal, deliverables, Do NOT list, done-tests, tripwires) verbatim from `02-IMPLEMENTATION-PLAN.md` when advancing to the next week. Do not advance past a gate week (3, 6, 8) without its measured number recorded per G10.
 
@@ -74,8 +92,13 @@ If asked for something that violates a global constraint (G1–G10) or falls out
 - **Vector database:** never, without a measured latency justification (G3)
 - **LLM calls:** none until week 7 (G2)
 
-## Banned dependencies — Week 1
+## Banned dependencies — Week 2
 
-Do not install or import: `tenacity`, `celery`, `sqlalchemy`, `pydantic`, `click`, `rich`, `scrapy`, `beautifulsoup4`, `requests`.
+Do not install or import: `hdbscan`, `scikit-learn`, `faiss`, any vector
+database client (G3), plus week 1's list — `tenacity`, `celery`,
+`sqlalchemy`, `pydantic`, `click`, `rich`, `scrapy`, `beautifulsoup4`,
+`requests`.
 
-**Allowed:** `httpx`, `feedparser`, `pyyaml`, `python-dateutil`, `pytest`.
+**Newly allowed this week:** `sentence-transformers`, `numpy`.
+
+**Allowed (carried forward):** `httpx`, `feedparser`, `pyyaml`, `python-dateutil`, `pytest`.
