@@ -21,11 +21,20 @@ Endpoints, each backed by a static file in tests/fixtures/feeds/:
   /blocked.xml    valid feed, disallowed by the robots.txt above     (FR-203)
   /dupes.xml      same 5 articles as /normal.xml, different URLs with utm_* params
                   (FR-207 canonicalization + FR-208 dedup)
+
+Fixtures whose dates matter (recency, staleness) are templates: the literal
+timestamps are placeholders of the form {{RFC822:-3h}} / {{ISO:-3h}} /
+{{RFC822:-400d}}, rendered relative to wall-clock "now" at request time by
+_render_fixture. This is what makes /normal.xml's entries genuinely recent
+and /stale.xml's entry genuinely ~400 days old no matter when the server is
+started, instead of rotting to a fixed calendar date.
 """
 
 import argparse
+import re
 import sys
 import time
+from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -45,9 +54,49 @@ _STATIC_XML_ROUTES = {
     "/dupes.xml": "dupes.xml",
 }
 
+# Fixtures with {{RFC822:...}}/{{ISO:...}} date placeholders that must be
+# rendered relative to now. empty.xml and malformed.xml carry no dates and
+# malformed.xml's truncated XML must reach feedparser untouched, so both are
+# served as raw bytes instead.
+_TEMPLATED_FIXTURES = {"normal.xml", "atom.xml", "fullbody.xml", "stale.xml", "blocked.xml", "dupes.xml"}
+
+_WEEKDAYS = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
+_MONTHS = ("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
+
+_PLACEHOLDER_RE = re.compile(r"\{\{(RFC822|ISO):([+-]?\d+(?:\.\d+)?)(h|d)\}\}")
+
+
+def _rfc822(dt: datetime) -> str:
+    # Built manually rather than via strftime("%a, %d %b") — %a/%b are
+    # locale-dependent and RFC822 requires English weekday/month names.
+    return (
+        f"{_WEEKDAYS[dt.weekday()]}, {dt.day:02d} {_MONTHS[dt.month - 1]} {dt.year} "
+        f"{dt.hour:02d}:{dt.minute:02d}:{dt.second:02d} +0000"
+    )
+
+
+def _iso8601(dt: datetime) -> str:
+    return dt.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _render_placeholder(match: "re.Match[str]") -> str:
+    kind, amount, unit = match.group(1), float(match.group(2)), match.group(3)
+    hours = amount * 24 if unit == "d" else amount
+    dt = datetime.now(timezone.utc) + timedelta(hours=hours)
+    return _rfc822(dt) if kind == "RFC822" else _iso8601(dt)
+
+
+def _render_fixture(name: str) -> bytes:
+    text = (FIXTURES_DIR / name).read_text(encoding="utf-8")
+    return _PLACEHOLDER_RE.sub(_render_placeholder, text).encode("utf-8")
+
 
 def _read_fixture(name: str) -> bytes:
     return (FIXTURES_DIR / name).read_bytes()
+
+
+def _fixture_bytes(name: str) -> bytes:
+    return _render_fixture(name) if name in _TEMPLATED_FIXTURES else _read_fixture(name)
 
 
 class MockFeedHandler(BaseHTTPRequestHandler):
@@ -88,7 +137,7 @@ class MockFeedHandler(BaseHTTPRequestHandler):
             self.send_header("ETag", ETAG_VALUE)
             self.end_headers()
             return
-        self._send_xml(_read_fixture("etag.xml"), extra_headers={"ETag": ETAG_VALUE})
+        self._send_xml(_render_fixture("etag.xml"), extra_headers={"ETag": ETAG_VALUE})
 
     # FR-201: conditional GET via If-Modified-Since / Last-Modified.
     def _handle_lastmod(self) -> None:
@@ -97,13 +146,13 @@ class MockFeedHandler(BaseHTTPRequestHandler):
             self.send_header("Last-Modified", LAST_MODIFIED_VALUE)
             self.end_headers()
             return
-        self._send_xml(_read_fixture("lastmod.xml"), extra_headers={"Last-Modified": LAST_MODIFIED_VALUE})
+        self._send_xml(_render_fixture("lastmod.xml"), extra_headers={"Last-Modified": LAST_MODIFIED_VALUE})
 
     def do_GET(self) -> None:  # noqa: N802 - stdlib method name
         path = self.path
 
         if path in _STATIC_XML_ROUTES:
-            self._send_xml(_read_fixture(_STATIC_XML_ROUTES[path]))
+            self._send_xml(_fixture_bytes(_STATIC_XML_ROUTES[path]))
         elif path == "/etag.xml":
             self._handle_etag()
         elif path == "/lastmod.xml":
@@ -114,7 +163,7 @@ class MockFeedHandler(BaseHTTPRequestHandler):
             self._send_status_only(404)
         elif path == "/slow":
             time.sleep(3)
-            self._send_xml(_read_fixture("normal.xml"))
+            self._send_xml(_render_fixture("normal.xml"))
         elif path == "/robots.txt":
             self._send_text(_read_fixture("robots.txt"))
         else:

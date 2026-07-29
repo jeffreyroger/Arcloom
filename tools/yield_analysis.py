@@ -13,12 +13,30 @@ excluded from the "backfill-excluded" figures (source_first_fetch =
 MIN(article.fetched_at) per source_id; any article with published_at
 before that is backfill for that source).
 
-A day only counts toward the criterion-3 median if run_log shows the
-scheduler wasn't down for more than COVERAGE_GAP_FAIL_HOURS that day --
-otherwise a quiet day reflects an outage, not low yield.
+Coverage rule (source-and-day based, not a scheduler-downtime rule): a
+(source, day) pair counts as "fully captured" if there was at least one
+successful fetch of that source within FEED_WINDOW_DAYS of the publish day.
+An earlier version of this script instead disqualified an entire day if
+run_log showed any >4h scheduler gap that day -- wrong for a published_at
+measurement, because published_at is independent of when we polled. RSS
+feeds are snapshots holding the last N entries, not streams: if a source
+publishes 20 articles Tuesday and we first poll Thursday, we still capture
+all 20 with Tuesday's publication dates. A scheduler gap only loses data
+when it exceeds the feed's retention window (typically days), not when it's
+a few hours -- so a same-day outage should not, by itself, disqualify that
+day. That rule disqualified all 14 of 14 days in practice.
+
+Per-source fetch-success evidence comes from run_log.errors: each clean run
+(stage_counts IS NOT NULL, i.e. not a crash/interrupt) records a per-source
+failure line ("source {id}: ...") for anything that didn't succeed;
+enabled sources absent from that list succeeded (200 or 304). This assumes
+the currently-enabled source set was also enabled during past runs in the
+window -- feeds.yaml doesn't change often enough at week-1 scale for that
+to matter, but it is an approximation, not a historical record.
 """
 
 import json
+import re
 import sqlite3
 import statistics
 import sys
@@ -32,9 +50,11 @@ import config  # noqa: E402
 import db  # noqa: E402
 
 WINDOW_DAYS = 14
-COVERAGE_GAP_FAIL_HOURS = 4.0
+COVERAGE_QUALIFY_FRACTION = 0.90
 CRITERION_LOW, CRITERION_HIGH = 500, 2000
 TOP_N = 5
+
+_SOURCE_ERROR_RE = re.compile(r"^source (\d+):")
 
 
 def _parse_ts(ts: str) -> datetime:
@@ -52,39 +72,58 @@ def _window_days(reference: datetime) -> list[str]:
     return sorted((today - timedelta(days=i)).strftime("%Y-%m-%d") for i in range(1, WINDOW_DAYS + 1))
 
 
-# Only gaps whose *raw* length exceeds COVERAGE_GAP_FAIL_HOURS count as an
-# outage at all (normal ~15-minute cron jitter must never disqualify a
-# day); each qualifying gap's overlap with a given day is then summed, so a
-# day touched by more than one outage is still correctly disqualified.
-def _scheduler_downtime_by_day(conn: sqlite3.Connection, days: list[str]) -> dict[str, float]:
-    starts = sorted(_parse_ts(row[0]) for row in conn.execute("SELECT started_at FROM run_log"))
-    downtime = {d: 0.0 for d in days}
-
-    day_bounds = {}
-    for d in days:
-        day_start = datetime.strptime(d, "%Y-%m-%d").replace(tzinfo=timezone.utc)
-        day_bounds[d] = (day_start, day_start + timedelta(days=1))
-
-    if len(starts) < 2:
-        return {d: 24.0 for d in days}
-
-    for t0, t1 in zip(starts, starts[1:]):
-        gap_hours = (t1 - t0).total_seconds() / 3600
-        if gap_hours <= COVERAGE_GAP_FAIL_HOURS:
+# Per source, the set of calendar days on which at least one clean run did
+# NOT record a failure for that source -- i.e. evidence of a successful
+# fetch that day. Only clean runs (stage_counts IS NOT NULL) are used: a
+# crash/interrupt row's `errors` column holds a traceback/interrupt marker,
+# not the per-source diagnostic list, and would otherwise be misread as
+# "nothing failed" for every source.
+#
+# Known gap: pipeline/ingest.py's `errors` list only itemizes true
+# failures, not robots.txt skips (FR-203) -- a source permanently
+# disallowed by its own robots.txt is therefore counted here as
+# "succeeding" every run, though it structurally never yields articles.
+# Its EXCL/day contribution stays correctly at 0 regardless, so this only
+# risks over-crediting that source's coverage, not inflating the article
+# count. Fixing this precisely would require ingest.py to itemize skipped
+# source ids per run, which run_log does not currently do.
+def _fetch_success_days_by_source(conn: sqlite3.Connection, source_ids: set[int]) -> dict[int, set[str]]:
+    success_days: dict[int, set[str]] = {sid: set() for sid in source_ids}
+    rows = conn.execute("SELECT started_at, errors FROM run_log WHERE stage_counts IS NOT NULL")
+    for started_at, errors_raw in rows:
+        try:
+            day = _day_str(_parse_ts(started_at))
+        except ValueError:
             continue
-        for d, (day_start, day_end) in day_bounds.items():
-            overlap_start = max(t0, day_start)
-            overlap_end = min(t1, day_end)
-            if overlap_end > overlap_start:
-                downtime[d] += (overlap_end - overlap_start).total_seconds() / 3600
+        failed_ids: set[int] = set()
+        if errors_raw:
+            for line in json.loads(errors_raw):
+                m = _SOURCE_ERROR_RE.match(line)
+                if m:
+                    failed_ids.add(int(m.group(1)))
+        for sid in source_ids:
+            if sid not in failed_ids:
+                success_days[sid].add(day)
+    return success_days
 
-    # A day entirely outside the run_log's recorded span has no coverage
-    # information at all -- treat it as fully down, not as a clean zero.
-    for d, (day_start, day_end) in day_bounds.items():
-        if day_end <= starts[0] or day_start >= starts[-1]:
-            downtime[d] = 24.0
 
-    return downtime
+# A (source, day) pair is fully captured if the source had a successful
+# fetch on `day` itself or any of the following FEED_WINDOW_DAYS-1 days --
+# any of those polls would have caught the article before it could scroll
+# out of the feed's retention window.
+def _coverage_by_day(
+    days: list[str], source_ids: set[int], success_days: dict[int, set[str]]
+) -> dict[str, tuple[float, int, int]]:
+    coverage = {}
+    for d in days:
+        day_dt = datetime.strptime(d, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+        window = [(day_dt + timedelta(days=i)).strftime("%Y-%m-%d") for i in range(config.FEED_WINDOW_DAYS)]
+        captured = sum(
+            1 for sid in source_ids if success_days.get(sid, set()) & set(window)
+        )
+        total = len(source_ids)
+        coverage[d] = (captured / total if total else 0.0, captured, total)
+    return coverage
 
 
 def _first_fetch_by_source(conn: sqlite3.Connection) -> dict[int, datetime]:
@@ -147,18 +186,37 @@ def main() -> int:
     days = _window_days(now)
 
     sources = {row["id"]: dict(row) for row in conn.execute("SELECT id, name, packs, status FROM source")}
+    # Coverage denominator is enabled AND status='ok' sources: a degraded
+    # source (e.g. the deliberately-broken canary URL required by week 1's
+    # done-criteria) has fail_streak-based tracking of its own and can never
+    # register a successful fetch again, so counting it here would put a
+    # permanent ceiling on every day's coverage fraction regardless of how
+    # healthy the rest of polling is. Matches the exclusion already applied
+    # to the yield-ranking sections below.
+    coverage_ids = {
+        row[0] for row in conn.execute("SELECT id FROM source WHERE enabled = 1 AND status = 'ok'")
+    }
     first_fetch = _first_fetch_by_source(conn)
     raw_by_day, excl_by_day, excl_by_day_pack, excl_by_source_total = _collect(conn, first_fetch, sources)
-    downtime_by_day = _scheduler_downtime_by_day(conn, days)
-    qualifying = {d: downtime_by_day[d] <= COVERAGE_GAP_FAIL_HOURS for d in days}
 
-    print(f"Window: last {WINDOW_DAYS} days by published_at, {days[0]} .. {days[-1]} (current partial day excluded)\n")
+    success_days = _fetch_success_days_by_source(conn, coverage_ids)
+    coverage_by_day = _coverage_by_day(days, coverage_ids, success_days)
+    qualifying = {d: coverage_by_day[d][0] >= COVERAGE_QUALIFY_FRACTION for d in days}
 
-    print(f"{'DATE':<12} {'RAW':>6} {'EXCL':>6} {'DOWNTIME_H':>10}  QUALIFYING")
+    print(f"Window: last {WINDOW_DAYS} days by published_at, {days[0]} .. {days[-1]} (current partial day excluded)")
+    print(
+        f"Coverage rule: a source counts as captured for day D if it had >=1 successful "
+        f"fetch within {config.FEED_WINDOW_DAYS} day(s) of D; a day qualifies at "
+        f">={COVERAGE_QUALIFY_FRACTION:.0%} of {len(coverage_ids)} enabled+ok sources captured.\n"
+    )
+
+    print(f"{'DATE':<12} {'RAW':>6} {'EXCL':>6} {'COVERAGE':>10}  QUALIFYING")
     print("-" * 52)
     for d in days:
-        flag = "yes" if qualifying[d] else f"no (down {downtime_by_day[d]:.1f}h)"
-        print(f"{d:<12} {raw_by_day.get(d, 0):>6} {excl_by_day.get(d, 0):>6} {downtime_by_day[d]:>10.1f}  {flag}")
+        frac, captured, total = coverage_by_day[d]
+        flag = "yes" if qualifying[d] else "no"
+        print(f"{d:<12} {raw_by_day.get(d, 0):>6} {excl_by_day.get(d, 0):>6} "
+              f"{captured:>4}/{total:<4}  {flag}")
 
     qualifying_counts = [excl_by_day.get(d, 0) for d in days if qualifying[d]]
     n_feeds = len(config.load_feeds())
@@ -173,8 +231,9 @@ def main() -> int:
         print(f"Median: {median:g} articles/day")
         print(f"Meets 500-2,000: {'YES' if meets else 'NO'}")
     else:
-        print("Median: N/A -- no day in the last 14 has scheduler coverage clean of a "
-              f">{COVERAGE_GAP_FAIL_HOURS:.0f}h gap. Criterion 3 cannot be measured yet from this window.")
+        print(f"Median: N/A -- no day in the last {WINDOW_DAYS} reached "
+              f"{COVERAGE_QUALIFY_FRACTION:.0%} source coverage. Criterion 3 cannot be measured "
+              "yet from this window.")
     print(
         f"Note: {n_feeds} feeds is expected to fall short of 500-2,000/day on its own; "
         "re-run this script after feed expansion (week 1's 60-80 target, or later weeks' up to 100)."
@@ -189,6 +248,21 @@ def main() -> int:
             pack_totals[pack] += n
     for pack, total in sorted(pack_totals.items(), key=lambda kv: -kv[1]):
         print(f"  {pack:<16} {total / WINDOW_DAYS:>8.2f}/day  ({total} total)")
+
+    print("\n" + "=" * 72)
+    print("PER-PACK DAILY YIELD (backfill-excluded) -- pack balance drives feed expansion")
+    print("=" * 72)
+    pack_names = sorted(pack_totals.keys())
+    if pack_names:
+        header = f"{'DATE':<12}" + "".join(f"{p:>16}" for p in pack_names)
+        print(header)
+        print("-" * len(header))
+        for d in days:
+            row = [excl_by_day_pack.get(d, {}).get(p, 0) for p in pack_names]
+            print(f"{d:<12}" + "".join(f"{c:>16}" for c in row))
+        print("(a source can carry more than one pack, so rows need not sum to EXCL above)")
+    else:
+        print("  no pack data")
 
     # Ranking excludes disabled and degraded sources: those are already
     # tracked failures with an established remediation path (health.py,

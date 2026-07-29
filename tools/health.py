@@ -5,6 +5,9 @@ import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from tools.validate_feeds import longitudinal_report, print_longitudinal_report  # noqa: E402
+
 DB_PATH = Path(__file__).resolve().parent.parent / "arcloom.db"
 
 
@@ -37,8 +40,16 @@ def main() -> int:
     print(f"\nNewest published_at: {newest}")
     print(f"Oldest published_at: {oldest}")
 
+    # A point-in-time validate_feeds.py run can't see "enabled N days,
+    # produced nothing" -- that only shows up by querying history, which is
+    # why this runs here too, on every routine health check, not just when
+    # someone remembers to run --longitudinal by hand.
+    print("\nLongitudinal source check (zero_yield / stalled / blocked_but_ok):")
+    results = longitudinal_report(conn)
+    flagged = print_longitudinal_report(results) if results else False
+
     conn.close()
-    return 0
+    return 1 if flagged else 0
 
 
 if __name__ == "__main__":

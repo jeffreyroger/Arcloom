@@ -21,7 +21,7 @@ import sqlite3
 import sys
 import time
 import traceback
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import config
@@ -31,6 +31,16 @@ from pipeline.ingest import ingest_once, sync_sources
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+# Gap: no SRS requirement ID covers operational-table retention (see
+# config.RUN_LOG_RETENTION_D comment and DECISIONS.md). Deletes run_log rows
+# whose started_at is older than the retention window; returns rows deleted.
+def _prune_run_log(conn: sqlite3.Connection) -> int:
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=config.RUN_LOG_RETENTION_D)).strftime(
+        "%Y-%m-%dT%H:%M:%SZ"
+    )
+    return conn.execute("DELETE FROM run_log WHERE started_at < ?", (cutoff,)).rowcount
 
 
 # --dry-run: fetches and parses but writes nothing. Reads (never writes) any
@@ -82,7 +92,11 @@ async def run(dry_run: bool = False, feeds_path=None, db_path=None) -> int:
             ).lastrowid
             conn.commit()
             sync_sources(conn, feeds)
+            pruned = _prune_run_log(conn)
+            conn.commit()
             print(f"[run] sync_sources: {len(feeds)} feeds synced ({time.perf_counter() - t_stage:.2f}s)")
+            if pruned:
+                print(f"[run] pruned {pruned} run_log row(s) older than {config.RUN_LOG_RETENTION_D}d")
     except Exception as exc:
         print(f"[run] FATAL: database unwritable: {exc}", file=sys.stderr)
         return 1

@@ -34,31 +34,56 @@ def _now_iso() -> str:
 # to the file are inserted, feeds present in both are updated, and feeds no
 # longer in the file are marked status='disabled', enabled=0 — never
 # deleted, so past articles keep a valid source_id and run_log stays
-# coherent. `disabled` (removed from config, intentional) is distinct from
-# `degraded` (failing repeatedly, unintentional): a feed re-added to the
-# file has its disabled status cleared back to 'ok', but a degraded status
-# is left alone since that reflects observed failures, not config.
+# coherent. `disabled` (removed from config, or kept with enabled: false and
+# a disabled_reason, both intentional/config-driven) is distinct from
+# `degraded` (failing repeatedly, unintentional) and from `blocked`
+# (robots.txt disallows it specifically -- also config-driven once recorded
+# via disabled_reason, but labeled separately since the fetch attempt would
+# be legal for other reasons, just refused by the publisher). A feed
+# re-enabled in the file has its disabled/blocked status optimistically
+# cleared back to 'ok'; the next real fetch attempt corrects it either way.
+# A degraded status is left alone since that reflects observed failures,
+# not config.
 def sync_sources(conn: sqlite3.Connection, feeds: list[dict]) -> None:
     seen_urls = []
     for feed in feeds:
         packs_json = json.dumps(feed["packs"])
         seen_urls.append(feed["url"])
+        reason = feed.get("disabled_reason")
+
+        if feed["enabled"]:
+            status_expr = "CASE WHEN status IN ('disabled', 'blocked') THEN 'ok' ELSE status END"
+            status_params = ()
+        else:
+            forced_status = "blocked" if reason and reason.startswith("robots.txt") else "disabled"
+            status_expr = "?"
+            status_params = (forced_status,)
+
         cur = conn.execute(
-            """
+            f"""
             UPDATE source
-            SET name=?, packs=?, lang=?, weight=?, enabled=?,
-                status = CASE WHEN status = 'disabled' THEN 'ok' ELSE status END
+            SET name=?, packs=?, lang=?, weight=?, enabled=?, disabled_reason=?,
+                status = {status_expr}
             WHERE feed_url=?
             """,
-            (feed["name"], packs_json, feed["lang"], feed["weight"], int(feed["enabled"]), feed["url"]),
+            (feed["name"], packs_json, feed["lang"], feed["weight"], int(feed["enabled"]), reason)
+            + status_params
+            + (feed["url"],),
         )
         if cur.rowcount == 0:
+            insert_status = "ok" if feed["enabled"] else (
+                "blocked" if reason and reason.startswith("robots.txt") else "disabled"
+            )
+            # first_seen_at set once, here, and never touched again --
+            # tools/validate_feeds.py --longitudinal's basis for "how long
+            # has this source had the opportunity to produce anything."
             conn.execute(
                 """
-                INSERT INTO source (name, feed_url, packs, lang, weight, enabled)
-                VALUES (?, ?, ?, ?, ?, ?)
+                INSERT INTO source (name, feed_url, packs, lang, weight, enabled, disabled_reason, status, first_seen_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
-                (feed["name"], feed["url"], packs_json, feed["lang"], feed["weight"], int(feed["enabled"])),
+                (feed["name"], feed["url"], packs_json, feed["lang"], feed["weight"],
+                 int(feed["enabled"]), reason, insert_status, _now_iso()),
             )
 
     if seen_urls:
@@ -391,6 +416,16 @@ async def ingest_once(
                 _mark_source_result(conn, source_id, ok=True)
         elif status == "skipped_robots":
             counts["skipped_robots"] += 1
+            # FR-203: a robots.txt-disallowed source is never a failure and
+            # must not touch fail_streak, but it also must never be left
+            # reporting 'ok' -- distinct from both ok and degraded so it's
+            # visible in triage (tools/yield_analysis.py's zero-yield flag)
+            # instead of silently looking healthy forever.
+            if not dry_run:
+                conn.execute(
+                    "UPDATE source SET status = 'blocked' WHERE id = ? AND status != 'degraded'",
+                    (source_id,),
+                )
         else:
             counts["failures"] += 1
             errors.append(f"source {source_id}: {result.get('error')}")

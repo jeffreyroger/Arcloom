@@ -8,21 +8,21 @@
       <title>Etag Story 1</title>
       <link>https://example.com/etag/1</link>
       <guid>https://example.com/etag/1</guid>
-      <pubDate>Mon, 27 Jul 2026 12:00:00 +0000</pubDate>
+      <pubDate>{{RFC822:-0h}}</pubDate>
       <description>A short summary of the story.</description>
     </item>
     <item>
       <title>Etag Story 2</title>
       <link>https://example.com/etag/2</link>
       <guid>https://example.com/etag/2</guid>
-      <pubDate>Mon, 27 Jul 2026 11:00:00 +0000</pubDate>
+      <pubDate>{{RFC822:-1h}}</pubDate>
       <description>A short summary of the story.</description>
     </item>
     <item>
       <title>Etag Story 3</title>
       <link>https://example.com/etag/3</link>
       <guid>https://example.com/etag/3</guid>
-      <pubDate>Mon, 27 Jul 2026 10:00:00 +0000</pubDate>
+      <pubDate>{{RFC822:-2h}}</pubDate>
       <description>A short summary of the story.</description>
     </item>
   </channel>

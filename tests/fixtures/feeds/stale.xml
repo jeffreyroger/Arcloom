@@ -8,7 +8,7 @@
       <title>Stale Story</title>
       <link>https://example.com/stale/1</link>
       <guid>https://example.com/stale/1</guid>
-      <pubDate>Sun, 22 Jun 2025 12:00:00 +0000</pubDate>
+      <pubDate>{{RFC822:-400d}}</pubDate>
       <description>A short summary of the story.</description>
     </item>
   </channel>

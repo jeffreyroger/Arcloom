@@ -38,6 +38,14 @@ def test_normal_xml_is_valid_rss_with_20_recent_entries(base_url):
     assert not parsed.bozo
     assert len(parsed.entries) == 20
 
+    from datetime import datetime, timezone
+
+    now = datetime.now(timezone.utc)
+    for entry in parsed.entries:
+        published = datetime(*entry.published_parsed[:6], tzinfo=timezone.utc)
+        age_h = (now - published).total_seconds() / 3600
+        assert 0 <= age_h < 24, f"{entry.link} published {age_h:.1f}h ago, not recent"
+
 
 def test_atom_xml_is_valid_atom_not_rss(base_url):
     resp = httpx.get(f"{base_url}/atom.xml")

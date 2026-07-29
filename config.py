@@ -49,6 +49,12 @@ USER_AGENT = "ArcLoom/0.1 (+https://github.com/jeffreyroger/Arcloom)"
 # (tools/validate_feeds.py) — one value, not two redundant ones.
 FETCH_TIMEOUT_S = 10.0
 
+# Gap: no SRS requirement ID covers operational-table retention — NFR-301
+# covers article retention only, not run_log. Tracked in DECISIONS.md
+# ("Week 1 criterion 1" entry) pending week 12's SRS revision. run_log grows
+# ~375B/run (~13MB/year at 15-min cadence) with no bound otherwise.
+RUN_LOG_RETENTION_D = 90
+
 # FR-206: a parsed article timestamp further into the future than this is
 # treated as a feed bug, not fact, and triggers the fetched_at fallback.
 FUTURE_TOLERANCE_H = 48
@@ -56,6 +62,14 @@ FUTURE_TOLERANCE_H = 48
 # tools/validate_feeds.py: a feed whose newest entry is older than this is
 # flagged dead in the pre-flight report.
 STALE_DAYS = 30
+
+# tools/yield_analysis.py: assumed upper bound on how long a source's RSS
+# feed retains an entry before it can scroll out of the window. A
+# (source, day) pair is only counted as "fully captured" for criterion 3 if
+# at least one successful fetch of that source landed within this many days
+# of the publish date -- otherwise its day's articles may have already
+# scrolled out of the feed before any poll ever saw them.
+FEED_WINDOW_DAYS = 3
 
 # --- Static reference data (NFR-503: centralized here; not G5 tunables —
 # lists of known hosts/params, not thresholds) ---
@@ -132,6 +146,16 @@ def load_feeds(path: Path = FEEDS_PATH) -> list[dict]:
         if not isinstance(lang, str):
             raise ValueError(f"feeds.yaml entry {label!r}: 'lang' must be a string")
 
+        # FR-102: not one of the spec's minimum required fields, but FR-102
+        # lists a minimum, not an exclusive set. Machine-readable record of
+        # why a source is disabled -- week 12's README needs a count of
+        # exclusions and their reasons, which free-text comments can't give.
+        disabled_reason = entry.get("disabled_reason")
+        if disabled_reason is not None and not isinstance(disabled_reason, str):
+            raise ValueError(f"feeds.yaml entry {label!r}: 'disabled_reason' must be a string")
+        if enabled and disabled_reason:
+            raise ValueError(f"feeds.yaml entry {label!r}: 'disabled_reason' set but 'enabled' is true")
+
         feeds.append(
             {
                 "name": name,
@@ -140,6 +164,7 @@ def load_feeds(path: Path = FEEDS_PATH) -> list[dict]:
                 "enabled": enabled,
                 "weight": float(weight),
                 "lang": lang,
+                "disabled_reason": disabled_reason,
             }
         )
 

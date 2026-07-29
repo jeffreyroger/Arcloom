@@ -24,8 +24,10 @@ Drives:
 import json
 import os
 import socket
+import sqlite3
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 from statistics import mean
@@ -45,6 +47,8 @@ CANARY_NAME = "Mock Invalid Host Canary"
 FULLBODY_SOURCE_NAME = "Mock Full Body"
 DRIFT_FAIL_PCT = 20.0
 WAL_GROWTH_FAIL_RATIO = 1.2
+WAL_SAMPLE_INTERVAL_S = 0.2
+DB_GROWTH_FAIL_BYTES_PER_RUN = 2048  # 2 KB/run with zero articles inserted is unexplained
 
 
 def _wait_for_server(port: int, timeout: float = 10.0) -> None:
@@ -65,7 +69,34 @@ def _fresh_db() -> None:
             p.unlink()
 
 
+# The database is a one-shot process's file: by the time subprocess.run()
+# returns, pipeline/run.py has already closed its only connection, and
+# SQLite checkpoints (truncates) the WAL on last-connection-close. Sampling
+# after exit therefore always reads 0 -- this is why the WAL check used to
+# report a PASS it hadn't earned. To see the WAL mid-flight, a background
+# thread holds its own read-only connection open for the run's duration
+# and polls the -wal file's size every WAL_SAMPLE_INTERVAL_S while the
+# child subprocess is in flight.
+def _sample_wal_during(stop: threading.Event, samples: list[int]) -> None:
+    wal_path = Path(str(DB_PATH) + "-wal")
+    try:
+        ro_conn = sqlite3.connect(f"file:{DB_PATH}?mode=ro", uri=True)
+    except sqlite3.OperationalError:
+        return  # DB file doesn't exist yet (only possible before run 1)
+    try:
+        while not stop.is_set():
+            samples.append(wal_path.stat().st_size if wal_path.exists() else 0)
+            stop.wait(WAL_SAMPLE_INTERVAL_S)
+    finally:
+        ro_conn.close()
+
+
 def _run_once(env: dict, run_no: int) -> dict:
+    wal_samples: list[int] = []
+    stop = threading.Event()
+    sampler = threading.Thread(target=_sample_wal_during, args=(stop, wal_samples), daemon=True)
+    sampler.start()
+
     t0 = time.perf_counter()
     result = subprocess.run(
         [sys.executable, "-m", "pipeline.run", "--feeds", str(FEEDS_PATH), "--db", str(DB_PATH)],
@@ -76,7 +107,8 @@ def _run_once(env: dict, run_no: int) -> dict:
     )
     duration = time.perf_counter() - t0
 
-    import sqlite3
+    stop.set()
+    sampler.join(timeout=2)
 
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
@@ -89,15 +121,18 @@ def _run_once(env: dict, run_no: int) -> dict:
     stage_counts = json.loads(row["stage_counts"]) if row and row["stage_counts"] else {}
 
     db_bytes = DB_PATH.stat().st_size if DB_PATH.exists() else 0
-    wal_path = Path(str(DB_PATH) + "-wal")
-    wal_bytes = wal_path.stat().st_size if wal_path.exists() else 0
+    wal_bytes_end = 0  # always 0: SQLite checkpoints the WAL on connection close
+    wal_bytes_max = max(wal_samples) if wal_samples else 0
+    wal_samples_taken = len(wal_samples)
 
     return {
         "run": run_no,
         "exit_code": result.returncode,
         "duration_s": round(duration, 3),
         "db_bytes": db_bytes,
-        "wal_bytes": wal_bytes,
+        "wal_bytes": wal_bytes_end,
+        "wal_bytes_max": wal_bytes_max,
+        "wal_samples_taken": wal_samples_taken,
         "run_log_rows": run_log_rows,
         "articles_inserted": stage_counts.get("articles_inserted"),
         "duplicates_skipped": stage_counts.get("duplicates_skipped"),
@@ -121,7 +156,8 @@ def _soak(env: dict) -> list[dict]:
             logf.flush()
             print(
                 f"[soak] run {run_no:>3}/{SOAK_RUNS}: exit={record['exit_code']} "
-                f"dur={record['duration_s']:.2f}s db={record['db_bytes']}B wal={record['wal_bytes']}B "
+                f"dur={record['duration_s']:.2f}s db={record['db_bytes']}B "
+                f"wal_max={record['wal_bytes_max']}B ({record['wal_samples_taken']} samples) "
                 f"ins={record['articles_inserted']} dup={record['duplicates_skipped']} "
                 f"skip_robots={record['skipped_robots']} robots_fetches={record['robots_fetches']}"
             )
@@ -134,8 +170,6 @@ def _soak(env: dict) -> list[dict]:
 # timestamp nor an errors value -- i.e. the process died somewhere run.py's
 # own exception handling couldn't reach (e.g. killed, not raised).
 def _unexplained_gaps() -> int:
-    import sqlite3
-
     conn = sqlite3.connect(DB_PATH)
     count = conn.execute(
         "SELECT COUNT(*) FROM run_log WHERE finished_at IS NULL AND errors IS NULL"
@@ -145,8 +179,6 @@ def _unexplained_gaps() -> int:
 
 
 def _canary_status() -> tuple[int | None, str | None]:
-    import sqlite3
-
     conn = sqlite3.connect(DB_PATH)
     row = conn.execute(
         "SELECT fail_streak, status FROM source WHERE name = ?", (CANARY_NAME,)
@@ -156,8 +188,6 @@ def _canary_status() -> tuple[int | None, str | None]:
 
 
 def _max_fullbody_snippet_len() -> int | None:
-    import sqlite3
-
     conn = sqlite3.connect(DB_PATH)
     row = conn.execute(
         """
@@ -172,13 +202,21 @@ def _max_fullbody_snippet_len() -> int | None:
 
 
 def _report(records: list[dict]) -> bool:
-    verdicts = []  # (label, ok, detail)
+    verdicts = []  # (label, status, detail) -- status in {"PASS", "FAIL", "NOT OBSERVED"}
 
     crashes = [r for r in records if r["exit_code"] != 0]
-    verdicts.append(("Crashes (exit_code != 0)", len(crashes) == 0, f"{len(crashes)} of {len(records)} runs"))
+    verdicts.append((
+        "Crashes (exit_code != 0)",
+        "PASS" if len(crashes) == 0 else "FAIL",
+        f"{len(crashes)} of {len(records)} runs",
+    ))
 
     gaps = _unexplained_gaps()
-    verdicts.append(("Unexplained gaps (finished_at/errors both NULL)", gaps == 0, f"{gaps} row(s)"))
+    verdicts.append((
+        "Unexplained gaps (finished_at/errors both NULL)",
+        "PASS" if gaps == 0 else "FAIL",
+        f"{gaps} row(s)",
+    ))
 
     early = [r["duration_s"] for r in records if 1 <= r["run"] <= 20]
     late = [r["duration_s"] for r in records if 100 <= r["run"] <= 120]
@@ -186,43 +224,73 @@ def _report(records: list[dict]) -> bool:
     pct_change = ((mean_late - mean_early) / mean_early * 100) if mean_early else 0.0
     verdicts.append((
         "Run duration drift (runs 1-20 vs 100-120)",
-        abs(pct_change) <= DRIFT_FAIL_PCT,
+        "PASS" if abs(pct_change) <= DRIFT_FAIL_PCT else "FAIL",
         f"mean {mean_early:.2f}s -> {mean_late:.2f}s ({pct_change:+.1f}%)",
     ))
 
-    by_run = {r["run"]: r for r in records}
-    db_20, db_120 = by_run[20]["db_bytes"], by_run[120]["db_bytes"]
-    articles_after_20 = sum(r["articles_inserted"] or 0 for r in records if r["run"] > 20)
-    db_growth_expected = articles_after_20 == 0
-    verdicts.append((
-        "Database growth (run 20 -> 120, article growth after warm-up)",
-        db_growth_expected,
-        f"{db_20}B -> {db_120}B ({db_120 - db_20:+d}B); {articles_after_20} article(s) inserted after run 20",
-    ))
-
-    wal_series = [r["wal_bytes"] for r in records]
-    wal_monotonic = all(b >= a for a, b in zip(wal_series, wal_series[1:]))
-    wal_start = next((w for w in wal_series if w > 0), 0)
-    wal_end = wal_series[-1]
-    wal_ratio = (wal_end / wal_start) if wal_start else (1.0 if wal_end == 0 else float("inf"))
-    wal_ok = not (wal_monotonic and wal_ratio > WAL_GROWTH_FAIL_RATIO)
-    verdicts.append((
-        "WAL checkpoints (not monotonic growth)",
-        wal_ok,
-        f"monotonic={wal_monotonic}, {wal_start}B -> {wal_end}B (x{wal_ratio:.2f})",
-    ))
-
+    # Idempotency: does a repeat run insert new articles? Not the same
+    # question as "does the database grow" -- run_log accumulation grows
+    # the file with zero articles inserted, which is a separate, correctly
+    # bounded question handled below.
     total_inserted_after_run1 = sum(r["articles_inserted"] or 0 for r in records if r["run"] >= 2)
     verdicts.append((
         "Idempotency (articles inserted, runs 2-120)",
-        total_inserted_after_run1 == 0,
+        "PASS" if total_inserted_after_run1 == 0 else "FAIL",
         f"{total_inserted_after_run1} new article(s) across runs 2-120",
     ))
+
+    # DB growth: bytes/run over the post-warm-up window (run 20 -> 120,
+    # after the one-time run-1 inserts), independent of idempotency. Only a
+    # FAIL if bytes are growing *and* nothing (articles) explains it --
+    # growth driven by real inserts is expected and not a defect.
+    by_run = {r["run"]: r for r in records}
+    db_20, db_120 = by_run[20]["db_bytes"], by_run[120]["db_bytes"]
+    growth_total = db_120 - db_20
+    bytes_per_run = growth_total / (120 - 20)
+    articles_after_20 = sum(r["articles_inserted"] or 0 for r in records if r["run"] > 20)
+    db_growth_unexplained = articles_after_20 == 0 and bytes_per_run > DB_GROWTH_FAIL_BYTES_PER_RUN
+    verdicts.append((
+        "DB growth (bytes/run, run 20 -> 120)",
+        "FAIL" if db_growth_unexplained else "PASS",
+        f"{db_20}B -> {db_120}B ({growth_total:+d}B, {bytes_per_run:.0f}B/run); "
+        f"{articles_after_20} article(s) inserted after run 20 "
+        f"(bound: <={DB_GROWTH_FAIL_BYTES_PER_RUN}B/run when zero articles inserted)",
+    ))
+
+    # WAL: peak size sampled by a background reader while each child run is
+    # in flight (see _sample_wal_during) -- post-exit sampling always reads
+    # 0 because SQLite checkpoints the WAL on the writer's last connection
+    # close, so that can never be evidence of anything. If the sampler
+    # never caught a nonzero size on any run, say so plainly instead of
+    # reporting a pass it didn't earn.
+    wal_peaks = [r["wal_bytes_max"] for r in records]
+    observed_runs = sum(1 for w in wal_peaks if w > 0)
+    if observed_runs == 0:
+        verdicts.append((
+            "WAL mid-run peak (sampled while child run is in flight)",
+            "NOT OBSERVED",
+            f"sampler recorded 0B on all {len(records)} runs -- either checkpoints faster than "
+            f"the {WAL_SAMPLE_INTERVAL_S * 1000:.0f}ms poll interval, or mid-run sampling never "
+            f"attached before the run finished",
+        ))
+    else:
+        early_peaks = [w for w in wal_peaks[:20] if w > 0]
+        late_peaks = [w for w in wal_peaks[-20:] if w > 0]
+        mean_early_peak = mean(early_peaks) if early_peaks else 0.0
+        mean_late_peak = mean(late_peaks) if late_peaks else 0.0
+        wal_ratio = (mean_late_peak / mean_early_peak) if mean_early_peak else float("inf")
+        wal_growth_ok = mean_early_peak == 0 or wal_ratio <= WAL_GROWTH_FAIL_RATIO
+        verdicts.append((
+            "WAL mid-run peak (sampled while child run is in flight)",
+            "PASS" if wal_growth_ok else "FAIL",
+            f"observed on {observed_runs}/{len(records)} runs; mean peak runs 1-20={mean_early_peak:.0f}B, "
+            f"runs 100-120={mean_late_peak:.0f}B (x{wal_ratio:.2f}), max ever={max(wal_peaks)}B",
+        ))
 
     fetches_after_run1 = sum(1 for r in records if r["run"] >= 2 and (r["robots_fetches"] or 0) > 0)
     verdicts.append((
         "Robots cache expiry (18s TTL forces refetch)",
-        fetches_after_run1 > 0,
+        "PASS" if fetches_after_run1 > 0 else "FAIL",
         f"{fetches_after_run1} of {len(records) - 1} post-run-1 runs triggered a robots.txt refetch",
     ))
 
@@ -230,14 +298,14 @@ def _report(records: list[dict]) -> bool:
     canary_ok = fail_streak is not None and fail_streak >= config.FAIL_STREAK_LIMIT and status == "degraded"
     verdicts.append((
         "Canary degraded (invalid host)",
-        canary_ok,
+        "PASS" if canary_ok else "FAIL",
         f"fail_streak={fail_streak}, status={status!r}",
     ))
 
     blocked_skipped_every_run = all((r["skipped_robots"] or 0) == 1 for r in records)
     verdicts.append((
         "Blocked feed never fetched (FR-203)",
-        blocked_skipped_every_run,
+        "PASS" if blocked_skipped_every_run else "FAIL",
         f"skipped_robots==1 on {sum(1 for r in records if (r['skipped_robots'] or 0) == 1)}/{len(records)} runs",
     ))
 
@@ -245,7 +313,7 @@ def _report(records: list[dict]) -> bool:
     snippet_ok = max_snippet is not None and max_snippet <= 300
     verdicts.append((
         "Full-body snippet <= 300 chars (NFR-602)",
-        snippet_ok,
+        "PASS" if snippet_ok else "FAIL",
         f"max snippet length = {max_snippet}",
     ))
 
@@ -253,12 +321,20 @@ def _report(records: list[dict]) -> bool:
     print("\n" + "=" * 100)
     print("ACCELERATED SOAK VERDICT")
     print("=" * 100)
-    for label, ok, detail in verdicts:
-        print(f"{'PASS' if ok else 'FAIL':<5} {label:<{label_w}}  {detail}")
+    for label, status, detail in verdicts:
+        print(f"{status:<12} {label:<{label_w}}  {detail}")
     print("=" * 100)
 
-    all_ok = all(ok for _, ok, _ in verdicts)
-    print("OVERALL:", "PASS" if all_ok else "FAIL")
+    # NOT OBSERVED means inconclusive, not failing -- it must not silently
+    # read as a pass either, which is why it's printed distinctly above and
+    # called out again here rather than folded into the PASS/FAIL count.
+    not_observed = [label for label, status, _ in verdicts if status == "NOT OBSERVED"]
+    all_ok = all(status != "FAIL" for _, status, _ in verdicts)
+    print("OVERALL:", "PASS" if all_ok else "FAIL", end="")
+    if not_observed:
+        print(f"  ({len(not_observed)} check(s) NOT OBSERVED: {', '.join(not_observed)})")
+    else:
+        print()
     return all_ok
 
 

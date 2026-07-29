@@ -3,40 +3,40 @@
   <title>Atom Feed</title>
   <link href="https://example.com/"/>
   <id>https://example.com/atom-feed</id>
-  <updated>2026-07-27T12:00:00Z</updated>
+  <updated>{{ISO:-0h}}</updated>
   <entry>
     <title>Atom Story 1</title>
     <link href="https://example.com/atom/1"/>
     <id>https://example.com/atom/1</id>
-    <updated>2026-07-27T12:00:00Z</updated>
+    <updated>{{ISO:-0h}}</updated>
     <summary>A short atom summary.</summary>
   </entry>
   <entry>
     <title>Atom Story 2</title>
     <link href="https://example.com/atom/2"/>
     <id>https://example.com/atom/2</id>
-    <updated>2026-07-27T05:00:00Z</updated>
+    <updated>{{ISO:-1h}}</updated>
     <summary>A short atom summary.</summary>
   </entry>
   <entry>
     <title>Atom Story 3</title>
     <link href="https://example.com/atom/3"/>
     <id>https://example.com/atom/3</id>
-    <updated>2026-07-26T22:00:00Z</updated>
+    <updated>{{ISO:-2h}}</updated>
     <summary>A short atom summary.</summary>
   </entry>
   <entry>
     <title>Atom Story 4</title>
     <link href="https://example.com/atom/4"/>
     <id>https://example.com/atom/4</id>
-    <updated>2026-07-26T15:00:00Z</updated>
+    <updated>{{ISO:-3h}}</updated>
     <summary>A short atom summary.</summary>
   </entry>
   <entry>
     <title>Atom Story 5</title>
     <link href="https://example.com/atom/5"/>
     <id>https://example.com/atom/5</id>
-    <updated>2026-07-26T08:00:00Z</updated>
+    <updated>{{ISO:-4h}}</updated>
     <summary>A short atom summary.</summary>
   </entry>
 </feed>

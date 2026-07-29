@@ -66,10 +66,15 @@ actually wall-clock-dependent:
    — a deterministic local feed set, 120 runs at 20-second intervals, with
    `ROBOTS_CACHE_TTL_H` overridden to 18 seconds (shorter than the interval)
    specifically to force the cache-expiry-and-refetch path within the run
-   rather than waiting on the real 24h TTL. Result: 0 crashes, 0
-   unexplained `run_log` gaps, 0 articles inserted after run 1 (idempotency
-   holds), duration and WAL size both flat run-to-run, and the deliberately
-   broken feed correctly reached `status='degraded'`. Full detail in
+   rather than waiting on the real 24h TTL. Result (re-measured 2026-07-28
+   after the correction below): 0 crashes, 0 unexplained `run_log` gaps,
+   0 articles inserted across runs 2-120 (idempotency holds), run duration
+   flat (24.63s -> 24.71s, +0.3%), DB growth 369B/run over the post-warm-up
+   window with zero articles inserted (well under the 2KB/run bound), WAL
+   genuinely observed mid-run on 119/120 runs (mean peak ~8.9KB, max
+   20.6KB, flat run-to-run at x1.00), the robots.txt TTL override forced a
+   refetch on 119/119 post-run-1 runs, and the deliberately broken feed
+   correctly reached `status='degraded'`. Full detail in
    `logs/soak_run_log.jsonl`.
 2. **Retroactive yield analysis** (`tools/yield_analysis.py`) — criterion 3
    (500–2,000 articles/day) measured from `published_at` against the real
@@ -102,3 +107,49 @@ that isn't a personal machine subject to sleep/power-management
 interference). Criterion 1 will be re-verified there against a real
 multi-day, real-TTL window, and this entry will be updated with that
 result rather than left standing on the accelerated substitute alone.
+
+**Correction (2026-07-28): the first soak run overstated three checks.**
+A review of `tools/accelerated_soak.py` found its verdict table reporting
+confidence it hadn't earned:
+
+- **WAL check was structurally incapable of failing.** It sampled the
+  `-wal` file's size *after* `subprocess.run()` returned -- but by then
+  `pipeline/run.py` had already closed its only connection, and SQLite
+  checkpoints (truncates) the WAL on last-connection-close. All 120
+  samples read `wal_bytes: 0`, and "PASS -- WAL checkpoints, not monotonic
+  growth" was therefore unearned; the check could never have failed no
+  matter what the WAL actually did. Fixed by having the soak driver open
+  its own read-only connection and poll the `-wal` file every 200ms for
+  the duration of each child run, recording the peak. If the sampler ever
+  fails to catch a nonzero peak, it now reports `NOT OBSERVED`, not
+  `PASS` -- inconclusive is reported as inconclusive.
+- **"Database growth" didn't check database growth.** Its pass condition
+  was `articles_inserted == 0` -- an idempotency check under the wrong
+  label. Meanwhile actual file growth over the original 120-run soak was
+  45,056 -> 90,112 bytes (~375B/run, ~13MB/year extrapolated), driven by
+  `run_log` accumulation and invisible under that label. Split into two
+  correctly named checks: `Idempotency (articles inserted, runs 2-120)`
+  keeps the original logic under its real name, and `DB growth (bytes/run,
+  run 20 -> 120)` fails only when growth exceeds 2KB/run *and* zero
+  articles were inserted -- growth explained by real inserts is not a
+  defect.
+- **`run_log` had no retention story.** ~13MB/year is benign but was
+  unbounded. NFR-301 covers article retention and says nothing about
+  operational tables -- an SRS gap; week 12's SRS revision should extend
+  NFR-301 or add a sibling requirement to cover it. Added
+  `config.RUN_LOG_RETENTION_D = 90` and a prune step in `pipeline/run.py`
+  that deletes `run_log` rows older than that window on every run.
+- **Fixture dates were rotting.** `tests/fixtures/feeds/*.xml` hardcoded
+  calendar dates (`2026-07-27`), and the "recent entries" test only
+  asserted `len(entries) == 20` -- never that they were actually recent.
+  As wall-clock time moved past the hardcoded date, `/normal.xml` would
+  have silently become a feed of increasingly stale entries with a test
+  that kept passing. Fixed by having `tools/mock_feed_server.py` render
+  `{{RFC822:-Nh}}` / `{{ISO:-Nh}}` placeholders relative to request time;
+  `/stale.xml` renders `{{RFC822:-400d}}` to keep its staleness contract
+  exact regardless of when the server runs. The regression test now
+  asserts every `/normal.xml` entry is actually within 24h of now, not
+  just that there are 20 of them.
+
+The corrected soak was re-run in full (120 runs); its honest results are
+recorded in the "substitute evidence" section above.

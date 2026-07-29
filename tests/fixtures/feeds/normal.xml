@@ -8,140 +8,140 @@
       <title>Normal Story 1</title>
       <link>https://example.com/articles/1</link>
       <guid>https://example.com/articles/1</guid>
-      <pubDate>Mon, 27 Jul 2026 12:00:00 +0000</pubDate>
+      <pubDate>{{RFC822:-0h}}</pubDate>
       <description>A short summary of the story.</description>
     </item>
     <item>
       <title>Normal Story 2</title>
       <link>https://example.com/articles/2</link>
       <guid>https://example.com/articles/2</guid>
-      <pubDate>Mon, 27 Jul 2026 05:00:00 +0000</pubDate>
+      <pubDate>{{RFC822:-1h}}</pubDate>
       <description>A short summary of the story.</description>
     </item>
     <item>
       <title>Normal Story 3</title>
       <link>https://example.com/articles/3</link>
       <guid>https://example.com/articles/3</guid>
-      <pubDate>Sun, 26 Jul 2026 22:00:00 +0000</pubDate>
+      <pubDate>{{RFC822:-2h}}</pubDate>
       <description>A short summary of the story.</description>
     </item>
     <item>
       <title>Normal Story 4</title>
       <link>https://example.com/articles/4</link>
       <guid>https://example.com/articles/4</guid>
-      <pubDate>Sun, 26 Jul 2026 15:00:00 +0000</pubDate>
+      <pubDate>{{RFC822:-3h}}</pubDate>
       <description>A short summary of the story.</description>
     </item>
     <item>
       <title>Normal Story 5</title>
       <link>https://example.com/articles/5</link>
       <guid>https://example.com/articles/5</guid>
-      <pubDate>Sun, 26 Jul 2026 08:00:00 +0000</pubDate>
+      <pubDate>{{RFC822:-4h}}</pubDate>
       <description>A short summary of the story.</description>
     </item>
     <item>
       <title>Normal Story 6</title>
       <link>https://example.com/articles/6</link>
       <guid>https://example.com/articles/6</guid>
-      <pubDate>Sun, 26 Jul 2026 01:00:00 +0000</pubDate>
+      <pubDate>{{RFC822:-5h}}</pubDate>
       <description>A short summary of the story.</description>
     </item>
     <item>
       <title>Normal Story 7</title>
       <link>https://example.com/articles/7</link>
       <guid>https://example.com/articles/7</guid>
-      <pubDate>Sat, 25 Jul 2026 18:00:00 +0000</pubDate>
+      <pubDate>{{RFC822:-6h}}</pubDate>
       <description>A short summary of the story.</description>
     </item>
     <item>
       <title>Normal Story 8</title>
       <link>https://example.com/articles/8</link>
       <guid>https://example.com/articles/8</guid>
-      <pubDate>Sat, 25 Jul 2026 11:00:00 +0000</pubDate>
+      <pubDate>{{RFC822:-7h}}</pubDate>
       <description>A short summary of the story.</description>
     </item>
     <item>
       <title>Normal Story 9</title>
       <link>https://example.com/articles/9</link>
       <guid>https://example.com/articles/9</guid>
-      <pubDate>Sat, 25 Jul 2026 04:00:00 +0000</pubDate>
+      <pubDate>{{RFC822:-8h}}</pubDate>
       <description>A short summary of the story.</description>
     </item>
     <item>
       <title>Normal Story 10</title>
       <link>https://example.com/articles/10</link>
       <guid>https://example.com/articles/10</guid>
-      <pubDate>Fri, 24 Jul 2026 21:00:00 +0000</pubDate>
+      <pubDate>{{RFC822:-9h}}</pubDate>
       <description>A short summary of the story.</description>
     </item>
     <item>
       <title>Normal Story 11</title>
       <link>https://example.com/articles/11</link>
       <guid>https://example.com/articles/11</guid>
-      <pubDate>Fri, 24 Jul 2026 14:00:00 +0000</pubDate>
+      <pubDate>{{RFC822:-10h}}</pubDate>
       <description>A short summary of the story.</description>
     </item>
     <item>
       <title>Normal Story 12</title>
       <link>https://example.com/articles/12</link>
       <guid>https://example.com/articles/12</guid>
-      <pubDate>Fri, 24 Jul 2026 07:00:00 +0000</pubDate>
+      <pubDate>{{RFC822:-11h}}</pubDate>
       <description>A short summary of the story.</description>
     </item>
     <item>
       <title>Normal Story 13</title>
       <link>https://example.com/articles/13</link>
       <guid>https://example.com/articles/13</guid>
-      <pubDate>Fri, 24 Jul 2026 00:00:00 +0000</pubDate>
+      <pubDate>{{RFC822:-12h}}</pubDate>
       <description>A short summary of the story.</description>
     </item>
     <item>
       <title>Normal Story 14</title>
       <link>https://example.com/articles/14</link>
       <guid>https://example.com/articles/14</guid>
-      <pubDate>Thu, 23 Jul 2026 17:00:00 +0000</pubDate>
+      <pubDate>{{RFC822:-13h}}</pubDate>
       <description>A short summary of the story.</description>
     </item>
     <item>
       <title>Normal Story 15</title>
       <link>https://example.com/articles/15</link>
       <guid>https://example.com/articles/15</guid>
-      <pubDate>Thu, 23 Jul 2026 10:00:00 +0000</pubDate>
+      <pubDate>{{RFC822:-14h}}</pubDate>
       <description>A short summary of the story.</description>
     </item>
     <item>
       <title>Normal Story 16</title>
       <link>https://example.com/articles/16</link>
       <guid>https://example.com/articles/16</guid>
-      <pubDate>Thu, 23 Jul 2026 03:00:00 +0000</pubDate>
+      <pubDate>{{RFC822:-15h}}</pubDate>
       <description>A short summary of the story.</description>
     </item>
     <item>
       <title>Normal Story 17</title>
       <link>https://example.com/articles/17</link>
       <guid>https://example.com/articles/17</guid>
-      <pubDate>Wed, 22 Jul 2026 20:00:00 +0000</pubDate>
+      <pubDate>{{RFC822:-16h}}</pubDate>
       <description>A short summary of the story.</description>
     </item>
     <item>
       <title>Normal Story 18</title>
       <link>https://example.com/articles/18</link>
       <guid>https://example.com/articles/18</guid>
-      <pubDate>Wed, 22 Jul 2026 13:00:00 +0000</pubDate>
+      <pubDate>{{RFC822:-17h}}</pubDate>
       <description>A short summary of the story.</description>
     </item>
     <item>
       <title>Normal Story 19</title>
       <link>https://example.com/articles/19</link>
       <guid>https://example.com/articles/19</guid>
-      <pubDate>Wed, 22 Jul 2026 06:00:00 +0000</pubDate>
+      <pubDate>{{RFC822:-18h}}</pubDate>
       <description>A short summary of the story.</description>
     </item>
     <item>
       <title>Normal Story 20</title>
       <link>https://example.com/articles/20</link>
       <guid>https://example.com/articles/20</guid>
-      <pubDate>Tue, 21 Jul 2026 23:00:00 +0000</pubDate>
+      <pubDate>{{RFC822:-19h}}</pubDate>
       <description>A short summary of the story.</description>
     </item>
   </channel>

@@ -17,7 +17,9 @@ CREATE TABLE IF NOT EXISTS source (
   last_modified TEXT,
   last_ok_at    TEXT,
   fail_streak   INTEGER NOT NULL DEFAULT 0,
-  status        TEXT NOT NULL DEFAULT 'ok'   -- ok | degraded | disabled
+  status        TEXT NOT NULL DEFAULT 'ok',  -- ok | degraded | disabled | blocked
+  disabled_reason TEXT,  -- FR-102 extension: machine-readable reason when enabled=0
+  first_seen_at TEXT  -- set once, at INSERT, never updated: tools/validate_feeds.py --longitudinal's basis for "days configured with zero yield"
 );
 
 -- FR-204/G9: article body text is never fetched or stored. Only title,
