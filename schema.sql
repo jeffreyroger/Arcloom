@@ -56,6 +56,12 @@ CREATE TABLE IF NOT EXISTS run_log (
   id          INTEGER PRIMARY KEY,
   started_at  TEXT NOT NULL,
   finished_at TEXT,
-  stage_counts TEXT,   -- JSON
-  errors      TEXT
+  stage_counts TEXT,   -- JSON: {"process": {...at start}, "counts": {...at completion}}
+  errors      TEXT,
+  -- NFR-403: last completed stage boundary (started, config_loaded,
+  -- sources_synced, pruned, fetch_started, fetch_complete, articles_written,
+  -- complete). A row killed mid-run shows its last_stage as whatever it
+  -- last reached, localizing where an unaccounted-for process death
+  -- happened instead of leaving finished_at/errors both NULL with no clue.
+  last_stage  TEXT
 );

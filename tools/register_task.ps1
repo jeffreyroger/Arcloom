@@ -11,7 +11,7 @@ $ErrorActionPreference = "Stop"
 
 $TaskName = "ArcLoom"
 $ProjectDir = "E:\Projects\Arcloom"
-$BatchFile = Join-Path $ProjectDir "run_ingest.bat"
+$PythonExe = "C:\Users\Jeffrey\AppData\Local\Programs\Python\Python312\pythonw.exe"
 $UserId = "$env:USERDOMAIN\$env:USERNAME"   # e.g. laptop-0aduu46h\jeffrey
 
 # --- Elevation guard: registering an S4U ("run whether user is logged on or
@@ -37,8 +37,14 @@ foreach ($old in @("ArcLoom", "ArcLoomIngest")) {
     }
 }
 
-# --- Action: run the batch wrapper, which cd's into the project and appends to logs\pipeline.log ---
-$action = New-ScheduledTaskAction -Execute $BatchFile -WorkingDirectory $ProjectDir
+# --- Action: invoke the interpreter directly -- no cmd.exe/powershell.exe
+#     wrapper in the chain, so there is no console to deliver a
+#     CTRL_C_EVENT/CTRL_CLOSE_EVENT/etc to (the root cause behind the
+#     observed 0xC000013A STATUS_CONTROL_C_EXIT). pythonw.exe allocates no
+#     console at all; pipeline/run.py now logs to logs\pipeline.log directly
+#     via a flush-per-record FileHandler, so nothing depends on stdout. -u
+#     is kept as belt-and-braces in case anything still writes to stdout. ---
+$action = New-ScheduledTaskAction -Execute $PythonExe -Argument "-u -m pipeline.run" -WorkingDirectory $ProjectDir
 
 # --- Trigger: fire once now, then repeat every 15 minutes indefinitely ---
 $trigger = New-ScheduledTaskTrigger -Once -At (Get-Date) `
@@ -69,6 +75,8 @@ Write-Output "Registered task: $TaskName (principal $UserId, LogonType S4U)"
 Write-Output ""
 Write-Output "=== Settings ==="
 Get-ScheduledTask -TaskName $TaskName | Select-Object -ExpandProperty Settings
+Write-Output "=== Idle settings (StopOnIdleEnd only bites if RunOnlyIfIdle above is True) ==="
+(Get-ScheduledTask -TaskName $TaskName).Settings.IdleSettings
 Write-Output "=== Principal ==="
 Get-ScheduledTask -TaskName $TaskName | Select-Object -ExpandProperty Principal
 Write-Output "=== Task info ==="

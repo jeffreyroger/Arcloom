@@ -40,6 +40,25 @@ def main() -> int:
     print(f"\nNewest published_at: {newest}")
     print(f"Oldest published_at: {oldest}")
 
+    # Mitigation for the still-open NFR-402/NFR-403 gap (see DECISIONS.md
+    # "Week 1 retrospective" correction, 2026-08-01): a killed run no longer
+    # leaves a permanently ambiguous row (pipeline/run.py's reaper marks it
+    # 'abandoned: ...'), but the rate is worth watching as a number rather
+    # than left as a mystery -- and per CLAUDE.md's week 2 tripwire, a jump
+    # past 60% would point at a duration-correlated cause.
+    print("\nAbandoned run rate:")
+    for label, hours in (("last 24h", 24), ("last 7d", 24 * 7)):
+        window_cutoff = (datetime.now(timezone.utc) - timedelta(hours=hours)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        total = conn.execute(
+            "SELECT COUNT(*) FROM run_log WHERE started_at >= ?", (window_cutoff,)
+        ).fetchone()[0]
+        abandoned = conn.execute(
+            "SELECT COUNT(*) FROM run_log WHERE started_at >= ? AND errors LIKE 'abandoned:%'",
+            (window_cutoff,),
+        ).fetchone()[0]
+        rate = (abandoned / total * 100) if total else 0.0
+        print(f"  {label}: {abandoned}/{total} ({rate:.1f}%)")
+
     # A point-in-time validate_feeds.py run can't see "enabled N days,
     # produced nothing" -- that only shows up by querying history, which is
     # why this runs here too, on every routine health check, not just when

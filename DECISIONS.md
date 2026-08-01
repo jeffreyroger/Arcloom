@@ -273,6 +273,86 @@ startup-time sweep that finds `finished_at IS NULL` rows older than
 `ExecutionTimeLimit` and back-fills them with a `timed_out` marker, rather
 than leaving them permanently ambiguous.
 
+**Correction, 2026-08-01: the `ExecutionTimeLimit` root cause above is
+refuted.** Recorded here rather than edited into the paragraph above,
+because a decisions log that quietly reads as though we were right the
+first time is worse than one that shows the reasoning chain — week 12's
+writeup will want this trail.
+
+- **Hypothesis 1 (refuted): `ExecutionTimeLimit` (10-minute) hard-kill.**
+  Refuted by two independent measurements. First, 80 clean runs recorded
+  since 2026-07-29 have a median duration of 4s and a max of 40s against
+  the 600s limit — zero runs anywhere near, let alone at or above, 600s.
+  A timeout kill requires the process to actually run for ~600s first;
+  nothing in this window did. Second, the recorded `LastTaskResult` for
+  the killed runs is `3221225786` = `0xC000013A` =
+  `STATUS_CONTROL_C_EXIT` — the exit status Windows assigns when a
+  console control event (`CTRL_C_EVENT`/`CTRL_BREAK_EVENT`/etc.) tears
+  down the process. `ExecutionTimeLimit` termination is a
+  `TerminateProcess` call and does not produce this code. Both
+  measurements point away from a timeout and toward a console-control
+  event.
+- **Hypothesis 2 (also insufficient): sleep/shutdown transitions landing
+  mid-run.** Considered as an alternative source of a control-style
+  kill, but the arithmetic rules it out as the primary mechanism. At a
+  4-second run duration on a 900-second (15-minute) interval, the
+  process is alive for roughly 0.44% of wall-clock time. Explaining the
+  observed ~42% incomplete-run rate this way would require on the order
+  of 40 sleep/shutdown transitions per day landing inside that 4-second
+  window — random wall-clock collisions cannot produce a rate anywhere
+  near that. The kill is correlated with process startup, not with
+  elapsed wall-clock time, which sleep/shutdown collisions would not
+  explain either.
+- **`^C` markers, corrected.** The closeout report's `^C` markers land
+  *after* runs that otherwise completed fully — they are not associated
+  with the incomplete/no-`finished_at` runs at all. These are two
+  distinct phenomena that were conflated in the original writeup: a
+  completed run followed by an unrelated `^C` in the terminal is not
+  evidence about what killed the 128 runs that never got a
+  `finished_at`. Stated plainly so the two are not read as the same
+  mechanism going forward.
+- **Current status: open.** The actual mechanism producing
+  `STATUS_CONTROL_C_EXIT` on these runs is not yet identified. What has
+  been done so far (this session, still week 1 remediation): removed
+  `cmd.exe` from the invocation chain (Task Scheduler now invokes
+  `pythonw.exe -u -m pipeline.run` directly, so there is one less
+  console in the path to receive a control event, and `pythonw.exe`
+  itself allocates no console at all); replaced shell-redirected,
+  block-buffered stdout (`>> logs\pipeline.log 2>&1`) with a
+  flush-per-record `logging.FileHandler`, so evidence of a run in
+  progress survives a kill that reaches it before the old ~8KB stdout
+  buffer would have filled; and added startup instrumentation (PID,
+  `run_log.id`, stage name on every log line) to make the next
+  occurrence correlatable against `run_log`. None of this identifies the
+  source of the control event — it narrows where to look and improves
+  the evidence the next occurrence will leave behind. Do not read the
+  chain restructuring above as a fix for this defect; it is not
+  confirmed to be one until a subsequent occurrence is caught with the
+  new instrumentation in place.
+
+**Mitigation, 2026-08-01: abandoned-run reaper.** The root cause above
+remains open (unidentified `STATUS_CONTROL_C_EXIT` source), but a killed run
+was established to cost throughput, not data — RSS feeds hold 20-50 entries
+as snapshots, so at ~55 completed runs/day a single article scrolling out
+unseen would require missing most of a day; SQLite transactions roll back
+cleanly on a process kill; and idempotency held across 308 runs. The only
+real cost was 129 permanently-ambiguous `run_log` rows polluting every
+metric computed against that table. `pipeline/run.py::_reap_abandoned_runs`
+now runs at the start of every run, before the current run's own row is
+inserted: any row with `finished_at`/`errors` both NULL and `started_at`
+older than `config.ABANDONED_THRESHOLD_M` (30 minutes — no run can still be
+legitimately alive that long given the 10-minute `ExecutionTimeLimit` and
+4-40s observed durations) is marked `errors='abandoned: no completion
+recorded'`. `tools/backfill_abandoned_historical.py` applied the same
+treatment to the pre-existing 129, marked `abandoned: historical` to keep
+them distinguishable from rows the live reaper catches going forward.
+`tools/health.py` now reports the abandoned rate over the last 24h and 7d as
+a monitored percentage rather than a mystery. This converts "unknown" into
+"known-abandoned" and makes the defect harmless to metrics regardless of
+whether the underlying cause is ever found; it does not fix the cause. A
+week 2 tripwire (CLAUDE.md) watches for the rate exceeding 60%, which would
+indicate the cause is duration-correlated rather than startup-correlated.
+
 **Hours spent vs. the 10h budget.** Approximate, reconstructed from commit
 session clustering (not tracked time): ~1.5h initial pipeline + schema
 (2026-07-25 morning), ~2h on the first round of ingest fixes the same day,

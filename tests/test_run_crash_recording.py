@@ -1,3 +1,4 @@
+import json
 import sqlite3
 
 import pytest
@@ -105,7 +106,12 @@ async def test_finally_does_not_clobber_an_already_recorded_crash(monkeypatch, t
     assert result == 1
     conn = sqlite3.connect(path)
     row = conn.execute("SELECT stage_counts, errors FROM run_log ORDER BY id DESC LIMIT 1").fetchone()
-    assert row[0] is None  # never set by the crash branch
+    # stage_counts holds only the process-context dict written at run start
+    # (NFR-403) -- the crash branch must never advance it to the
+    # {"process": ..., "counts": ...} shape the clean-completion path writes.
+    stage_counts = json.loads(row[0])
+    assert "process" in stage_counts
+    assert "counts" not in stage_counts
     assert "simulated crash" in row[1]
     assert "Traceback" in row[1]
     assert row[1] != "completed"

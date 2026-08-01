@@ -35,6 +35,10 @@ def _migrate(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE source ADD COLUMN first_seen_at TEXT")
         _backfill_first_seen_at(conn)
 
+    run_log_cols = {row[1] for row in conn.execute("PRAGMA table_info(run_log)")}
+    if "last_stage" not in run_log_cols:
+        conn.execute("ALTER TABLE run_log ADD COLUMN last_stage TEXT")
+
 
 # Rows that predate first_seen_at have no ground truth for "when did we
 # start trying to fetch this." Best available approximation, in order:

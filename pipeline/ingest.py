@@ -8,6 +8,7 @@ on `source` is the entire error-handling strategy (week 1 Do NOT list).
 
 import asyncio
 import json
+import logging
 import sqlite3
 import time
 from datetime import datetime, timedelta, timezone
@@ -19,6 +20,10 @@ import httpx
 
 import config
 from pipeline.normalize import canonicalize_url, derive_snippet, normalize_timestamp
+
+# NFR-402: propagates to the "arcloom" logger's FileHandler configured in
+# pipeline/run.py, so these lines carry the same run_id/pid/stage framing.
+_log = logging.getLogger("arcloom.ingest")
 
 
 # NFR-403: run_log timestamps and article fetched_at are UTC ISO8601.
@@ -124,11 +129,14 @@ async def _fetch_robots_body(client: httpx.AsyncClient, scheme: str, netloc: str
             robots_url, headers={"User-Agent": config.USER_AGENT}, timeout=config.FETCH_TIMEOUT_S
         )
     except httpx.HTTPError as exc:
-        print(f"[ingest] robots.txt fetch failed for {netloc}: {exc}; treating as allowed")
+        _log.warning(f"robots.txt fetch failed for {netloc}: {exc}; treating as allowed", extra={"stage": "robots"})
         return None
 
     if resp.status_code >= 400:
-        print(f"[ingest] robots.txt fetch failed for {netloc}: HTTP {resp.status_code}; treating as allowed")
+        _log.warning(
+            f"robots.txt fetch failed for {netloc}: HTTP {resp.status_code}; treating as allowed",
+            extra={"stage": "robots"},
+        )
         return None
 
     return resp.text

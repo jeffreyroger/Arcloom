@@ -55,6 +55,15 @@ FETCH_TIMEOUT_S = 10.0
 # ~375B/run (~13MB/year at 15-min cadence) with no bound otherwise.
 RUN_LOG_RETENTION_D = 90
 
+# Gap: no SRS requirement ID covers abandoned-run detection — mitigation for
+# the still-open NFR-402/NFR-403 gap (see DECISIONS.md "Week 1 retrospective"
+# correction, 2026-08-01): some runs vanish with finished_at/errors both NULL
+# and no trace of why. A run cannot still be legitimately alive this long
+# given the 10-minute Task Scheduler ExecutionTimeLimit and 4-40s observed
+# durations, so pipeline/run.py's reaper treats any such row older than this
+# threshold as abandoned rather than leaving it permanently ambiguous.
+ABANDONED_THRESHOLD_M = 30
+
 # FR-206: a parsed article timestamp further into the future than this is
 # treated as a feed bug, not fact, and triggers the fetched_at fallback.
 FUTURE_TOLERANCE_H = 48

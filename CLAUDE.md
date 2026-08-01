@@ -67,6 +67,13 @@ then re-enable it — do not edit around a running cron.
 - Adjusting `TAU_EVENT` more than once → you are eye-tuning; stop
 - Any time spent on CSS → cap at 30 minutes total
 - Considering GPU setup → unnecessary at this volume
+- Abandoned-run rate (`tools/health.py`) exceeds 60% during week 2 → stop
+  and investigate the still-open week 1 kill-signature defect (DECISIONS.md
+  "Week 1 retrospective" correction, 2026-08-01). Week 2 runs an order of
+  magnitude longer (embedding pushes runs from ~4s to 30-60s), so a jump
+  past 60% would indicate the cause is duration-correlated. If the rate
+  stays near the ~42% historical baseline, it's startup-correlated and
+  remains a host-environment issue deferred to the week 10 VPS migration.
 
 > Update this section (goal, deliverables, Do NOT list, done-tests, tripwires) verbatim from `02-IMPLEMENTATION-PLAN.md` when advancing to the next week. Do not advance past a gate week (3, 6, 8) without its measured number recorded per G10.
 
