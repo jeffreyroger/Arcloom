@@ -8,6 +8,8 @@ dependencies = [
   "feedparser",
   "pyyaml",
   "python-dateutil",
+  "sentence-transformers",
+  "numpy",
 ]
 
 [project.optional-dependencies]

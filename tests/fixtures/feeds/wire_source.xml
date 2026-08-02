@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0">
+  <channel>
+    <title>Wire Source Feed</title>
+    <link>https://example.com/</link>
+    <description>Fixture feed: the original wire story (FR-301/FR-302 simhash validation).</description>
+    <item>
+      <title>European Commission fines Google over antitrust violations in ad tech market</title>
+      <link>https://example.com/wire/original-story</link>
+      <guid>https://example.com/wire/original-story</guid>
+      <pubDate>{{RFC822:-0h}}</pubDate>
+      <description>A short summary of the story.</description>
+    </item>
+  </channel>
+</rss>

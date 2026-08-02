@@ -40,6 +40,23 @@ ROBOTS_CACHE_TTL_H = float(os.environ.get("ARCLOOM_ROBOTS_CACHE_TTL_H", 24))
 # or another crawler.
 USER_AGENT = "ArcLoom/0.1 (+https://github.com/jeffreyroger/Arcloom)"
 
+# --- Live in week 2 (embedding, FR-401 through FR-405) ---
+
+# FR-401/FR-404/FR-405: local CPU sentence-transformers model, not an API.
+# The HF model id, not a G5 tunable -- swapping it invalidates and
+# recomputes existing embeddings (FR-405) rather than requiring a
+# measurement plan to change.
+EMBED_MODEL_NAME = "BAAI/bge-small-en-v1.5"
+
+# Operational batching for encode() calls -- not quality-tunable, G5 doesn't
+# apply.
+EMBED_BATCH_SIZE = 32
+
+# FR-301/FR-302: Hamming distance threshold for the SimHash syndication
+# bypass. Fixed per week 2's plan (not eye-tuned; a W2 spot check against
+# known-syndicated wire stories, not a W3 gold-set sweep like TAU_EVENT).
+SIMHASH_HAMMING = 3
+
 # --- Operational settings (NFR-503: centralized here; not G5 tunables —
 # these are timeouts/tolerances, not quality-affecting thresholds, so no
 # measurement plan is required for them) ---
@@ -103,7 +120,6 @@ KNOWN_HTTPS_HOSTS = {"news.google.com", "feedproxy.google.com"}
 # --- Not live until later weeks ---
 
 TAU_EVENT = 0.75          # not live until week 2/3 — W3 sweep justifies this value
-SIMHASH_HAMMING = 3        # not live until week 2 — W2 spot check
 TAU_STORY = 0.55           # not live until week 5/6 — W6 sweep
 W_JACCARD = 0.6            # not live until week 5/6 — W6 ablation
 W_EMBED = 0.25             # not live until week 5/6 — W6 ablation

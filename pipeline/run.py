@@ -14,15 +14,37 @@ transaction at the end; a crash before that commit leaves the database
 exactly as it was before this run started, so simply re-running is safe.
 """
 
+import os
+import sys
+
+
+# The scheduled task runs pythonw.exe, which has no console -- sys.stdout
+# and sys.stderr are None there, not merely redirected. Our own logging uses
+# a FileHandler and is unaffected, but third-party libraries are not: week 2
+# adds sentence-transformers, which drives tqdm progress bars that write to
+# sys.stderr unconditionally. Writing to None raises AttributeError, which
+# would present as a run dying silently during embedding -- the same
+# signature as the week 1 kill defect this guards against. Must run before
+# any import that might print (hence the split from the import block below,
+# and the os/sys-only imports ahead of it).
+def _guard_pythonw_streams() -> None:
+    if sys.stdout is None:
+        sys.stdout = open(os.devnull, "w")
+    if sys.stderr is None:
+        sys.stderr = open(os.devnull, "w")
+    os.environ.setdefault("HF_HUB_DISABLE_PROGRESS_BARS", "1")
+    os.environ.setdefault("TQDM_DISABLE", "1")
+
+
+_guard_pythonw_streams()
+
 import argparse
 import asyncio
 import ctypes
 import json
 import logging
-import os
 import sqlite3
 import subprocess
-import sys
 import time
 import traceback
 from datetime import datetime, timedelta, timezone
@@ -30,7 +52,9 @@ from pathlib import Path
 
 import config
 import db
+from pipeline.embed import embed_pending
 from pipeline.ingest import ingest_once, sync_sources
+from pipeline.simhash import apply_bypass
 
 
 def _now_iso() -> str:
@@ -333,6 +357,30 @@ async def run(dry_run: bool = False, feeds_path=None, db_path=None) -> int:
         else:
             conn.commit()
             _mark_stage(conn, run_id, "articles_written", t_start)
+
+            # FR-301 through FR-303: simhash + syndication bypass runs before
+            # embedding so a near-duplicate's copied embedding already
+            # satisfies embed_pending's pending-set query below, instead of
+            # being embedded twice.
+            bypass_stats = apply_bypass(conn)
+            _mark_stage(conn, run_id, "simhash", t_start)
+            _log(
+                "simhash",
+                f"computed={bypass_stats['computed']} candidates={bypass_stats['candidates']} "
+                f"bypassed={bypass_stats['bypassed']} rate={bypass_stats['rate']:.3f}",
+            )
+
+            # FR-401 through FR-405: incremental embedding. Lazy-loaded (see
+            # pipeline/embed.py) so an incremental run with nothing pending
+            # doesn't pay the ~2-5s model load; logged either way so run
+            # duration variance is explainable.
+            embed_stats = embed_pending(conn)
+            _mark_stage(conn, run_id, "embedded", t_start)
+            _log(
+                "embedded",
+                f"{embed_stats['embedded']} of {embed_stats['pending']} pending, "
+                f"model_loaded={embed_stats['model_loaded']}",
+            )
         run_ok = True
         _mark_stage(conn, run_id, "complete", t_start)
 

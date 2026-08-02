@@ -21,6 +21,11 @@ Endpoints, each backed by a static file in tests/fixtures/feeds/:
   /blocked.xml    valid feed, disallowed by the robots.txt above     (FR-203)
   /dupes.xml      same 5 articles as /normal.xml, different URLs with utm_* params
                   (FR-207 canonicalization + FR-208 dedup)
+  /wire_source.xml      one article, the "original" wire story
+  /wire_syndicated.xml  same story, genuinely different URL (no shared host,
+                        path, or tracking params) and a one-word-reworded
+                        title -- what canonicalization can't dedupe but
+                        simhash's near-duplicate bypass can (FR-301/FR-302)
 
 Fixtures whose dates matter (recency, staleness) are templates: the literal
 timestamps are placeholders of the form {{RFC822:-3h}} / {{ISO:-3h}} /
@@ -52,13 +57,24 @@ _STATIC_XML_ROUTES = {
     "/malformed.xml": "malformed.xml",
     "/blocked.xml": "blocked.xml",
     "/dupes.xml": "dupes.xml",
+    "/wire_source.xml": "wire_source.xml",
+    "/wire_syndicated.xml": "wire_syndicated.xml",
 }
 
 # Fixtures with {{RFC822:...}}/{{ISO:...}} date placeholders that must be
 # rendered relative to now. empty.xml and malformed.xml carry no dates and
 # malformed.xml's truncated XML must reach feedparser untouched, so both are
 # served as raw bytes instead.
-_TEMPLATED_FIXTURES = {"normal.xml", "atom.xml", "fullbody.xml", "stale.xml", "blocked.xml", "dupes.xml"}
+_TEMPLATED_FIXTURES = {
+    "normal.xml",
+    "atom.xml",
+    "fullbody.xml",
+    "stale.xml",
+    "blocked.xml",
+    "dupes.xml",
+    "wire_source.xml",
+    "wire_syndicated.xml",
+}
 
 _WEEKDAYS = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
 _MONTHS = ("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")

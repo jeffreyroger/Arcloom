@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0">
+  <channel>
+    <title>Wire Syndicated Feed</title>
+    <link>https://another-outlet.example.org/</link>
+    <description>Fixture feed: a different outlet's syndicated pickup of the same wire story, at a genuinely different URL with a lightly reworded title (FR-301/FR-302 simhash validation) -- canonicalization (FR-207/FR-208) cannot merge this with wire_source.xml since the URLs share no host, path, or tracking params.</description>
+    <item>
+      <title>European Commission fines Google over antitrust violations in the ad tech market</title>
+      <link>https://another-outlet.example.org/news/breaking-story</link>
+      <guid>https://another-outlet.example.org/news/breaking-story</guid>
+      <pubDate>{{RFC822:-1h}}</pubDate>
+      <description>A short summary of the story.</description>
+    </item>
+  </channel>
+</rss>
