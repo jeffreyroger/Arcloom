@@ -10,3 +10,4 @@ venv/
 *.egg-info/
 logs/
 .claude/settings.json
+index.html

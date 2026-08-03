@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Arc Loom</title>
+<style>
+  body { font: 16px/1.4 system-ui, sans-serif; max-width: 720px; margin: 2rem auto; padding: 0 1rem; color: #111; }
+  h1 { font-size: 1.4rem; }
+  .meta { color: #555; font-size: 0.9rem; margin-bottom: 2rem; }
+  .card { border: 1px solid #ccc; border-radius: 6px; padding: 1rem; margin-bottom: 1.25rem; }
+  .card h2 { font-size: 1.1rem; margin: 0 0 0.25rem; }
+  .card .stats { color: #555; font-size: 0.85rem; margin-bottom: 0.5rem; }
+  .links { list-style: none; padding: 0; margin: 0; }
+  .links li { margin: 0.15rem 0; }
+  .links a { font-weight: 600; }
+  .empty { color: #555; }
+</style>
+</head>
+<body>
+<h1>Arc Loom</h1>
+<p class="meta">Event clusters active in the last {{ window_hours }} hours, generated {{ generated_at }}.</p>
+
+{% if clusters %}
+{% for cluster in clusters %}
+<div class="card">
+  <h2>{{ cluster.canonical_title }}</h2>
+  <div class="stats">{{ cluster.distinct_sources }} source{{ "s" if cluster.distinct_sources != 1 else "" }} &middot; last updated {{ cluster.updated_at }}</div>
+  <ul class="links">
+    {% for article in cluster.articles %}
+    <li><a href="{{ article.canonical_url }}">{{ article.source_name }}: {{ article.title }}</a></li>
+    {% endfor %}
+  </ul>
+</div>
+{% endfor %}
+{% else %}
+<p class="empty">No event clusters in the last {{ window_hours }} hours.</p>
+{% endif %}
+</body>
+</html>

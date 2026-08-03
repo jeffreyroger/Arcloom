@@ -52,8 +52,10 @@ from pathlib import Path
 
 import config
 import db
+from pipeline.cluster import assign_pending
 from pipeline.embed import embed_pending
 from pipeline.ingest import ingest_once, sync_sources
+from pipeline.render import render_index
 from pipeline.simhash import apply_bypass
 
 
@@ -380,6 +382,25 @@ async def run(dry_run: bool = False, feeds_path=None, db_path=None) -> int:
                 "embedded",
                 f"{embed_stats['embedded']} of {embed_stats['pending']} pending, "
                 f"model_loaded={embed_stats['model_loaded']}",
+            )
+
+            # FR-501 through FR-507: every embedded article is assigned to
+            # exactly one event cluster before the run completes.
+            cluster_stats = assign_pending(conn)
+            _mark_stage(conn, run_id, "clustered", t_start)
+            _log(
+                "clustered",
+                f"{cluster_stats['joined']} joined, {cluster_stats['seeded']} seeded, "
+                f"{cluster_stats['pending']} pending",
+            )
+
+            # Week 2 render deliverable: regenerate the static feed page
+            # every cycle so index.html never lags the database it reads.
+            render_stats = render_index(conn)
+            _mark_stage(conn, run_id, "rendered", t_start)
+            _log(
+                "rendered",
+                f"clusters={render_stats['cluster_count']} articles={render_stats['article_count']}",
             )
         run_ok = True
         _mark_stage(conn, run_id, "complete", t_start)

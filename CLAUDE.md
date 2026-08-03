@@ -28,6 +28,27 @@ unremediated gap in NFR-402's bookkeeping (see DECISIONS.md "Week 1
 retrospective"). Full detail, defect list, and criteria verdicts in
 DECISIONS.md.
 
+## Week 2 close state (recorded at handoff to week 3)
+
+1,568 embedded articles collapsed into 886 event clusters (783 singletons,
+88.4% — expected at 17 feeds per week 2's tripwire; the quantitative case
+for feed expansion, not a clustering defect). Every article has exactly one
+cluster (0 unclustered, 0 duplicate assignments). `index.html` rendered 120
+clusters / 640 article links for the trailing 72h window. Full pipeline run
+(fetch → simhash → embed → cluster → render) completed in ~19s, well under
+the 5-minute NFR-101 budget. Feed count unchanged from week 1 at 17 alive
+(still below the 60–80 target — same unremediated gap, tracked for the
+week-12 feed-expansion track). Abandoned-run rate over the last 7 days is
+24.2%, under week 2's 60% tripwire and below the ~42% historical baseline,
+so no investigation was triggered.
+
+One clustering anomaly to carry into week 3's labeling: a single cluster
+grew to 363 members from only 2 distinct sources — a likely centroid-drift
+artifact of running-mean incremental matching, where repeated near-duplicate
+titles from one source drag the centroid until it starts absorbing
+less-related content. Not remediated: `TAU_EVENT` stays frozen at 0.75 per
+the week 2 tripwire, pending the week 3 gold-set sweep.
+
 ## Standing rule: never edit the repo while the scheduled task is enabled
 
 The 15-minute ArcLoom scheduled task reads `feeds.yaml`/`config.py`/
@@ -37,43 +58,34 @@ been the source of every SIGINT in this project's history. Disable the
 task first (`Disable-ScheduledTask -TaskName ArcLoom`), make the change,
 then re-enable it — do not edit around a running cron.
 
-## Current week: **Week 2 — Embedding and event clustering**
+## Current week: **Week 3 — GATE: label, measure, tune**
 
-**Goal:** Articles collapse into event clusters. Quality unknown and that is fine this week.
+**Goal:** A number. This is the most important week in the plan and the least enjoyable.
 
-**Time budget:** 10h (2h embed, 4h cluster, 2h simhash, 2h render)
+**Time budget:** 11h (2h export tooling, 3h labeling, 3h scorer, 2h sweep, 1h writeup)
 
 **Deliverables**
-- `pipeline/embed.py` — `bge-small-en-v1.5`, CPU, batched, L2-normalized, stored as `float32` BLOB with model tag
-- `pipeline/simhash.py` — 64-bit over title trigrams, Hamming ≤ 3 bypass
-- `pipeline/cluster.py` — incremental single-pass centroid matching over a 72h active window
-- `cluster` and `article_cluster` tables
-- `pipeline/render.py` — Jinja2 → one `index.html`, cards showing canonical title, source count, links
+- `evals/export_labeling.py` — dumps ~500 articles across 3 days to CSV, **sorted by embedding similarity** so duplicates are adjacent (FR-1201). This sort is what makes labeling take 90 minutes instead of 5 hours.
+- `evals/gold_clusters.csv` — hand-labeled, committed to the repo
+- `evals/score_clustering.py` — B-cubed precision/recall/F1
+- Threshold sweep over `TAU_EVENT` ∈ [0.60, 0.90] step 0.01, and `ACTIVE_WINDOW_H` ∈ {24, 48, 72, 96}
+- A threshold-vs-F1 plot, committed as PNG
+- `config.py` with the winning values and a comment citing the number
 
 **Do NOT**
-- Tune `TAU_EVENT` by eye. Set it to 0.75 and leave it. Tuning is week 3's job and requires the gold set.
-- Add HDBSCAN, DBSCAN, or any batch clustering library — incremental is a hard requirement (FR-502)
-- Style the HTML beyond legibility. No CSS framework.
-- Add pagination, filtering, sorting or search
-- Try a second embedding model "to compare" — that is a week 3 activity with a metric
+- Label more than 600 articles. Diminishing returns are steep.
+- Optimize past F1 = 0.85. **Stop at 0.85.** Further gains are not worth the weeks they cost.
+- Build a labeling UI. CSV in a spreadsheet is correct.
+- Start entity extraction, even if labeling finishes early. Use spare time to re-read the labels for consistency.
 
-**Done when**
-- Every article has exactly one cluster
-- `index.html` renders the last 72 hours
-- A visibly wire-syndicated story shows a source count > 1
-- Full pipeline run completes in under 5 minutes (NFR-101)
+**GATE — do not proceed to week 4 until:**
+- B-cubed F1 ≥ 0.80 on the gold set
+- The plot exists and is committed
+- `config.py` values are eval-justified
 
-**Tripwires**
-- Adjusting `TAU_EVENT` more than once → you are eye-tuning; stop
-- Any time spent on CSS → cap at 30 minutes total
-- Considering GPU setup → unnecessary at this volume
-- Abandoned-run rate (`tools/health.py`) exceeds 60% during week 2 → stop
-  and investigate the still-open week 1 kill-signature defect (DECISIONS.md
-  "Week 1 retrospective" correction, 2026-08-01). Week 2 runs an order of
-  magnitude longer (embedding pushes runs from ~4s to 30-60s), so a jump
-  past 60% would indicate the cause is duration-correlated. If the rate
-  stays near the ~42% historical baseline, it's startup-correlated and
-  remains a host-environment issue deferred to the week 10 VPS migration.
+**If F1 < 0.70:** something structural is wrong. Change exactly one variable — the embedding model, or the embedding input construction (FR-402), or the domain. Not two. Re-measure. Budget one extra week for this and no more.
+
+**If F1 is between 0.70 and 0.80:** ship it, record it honestly, proceed. The storyline layer is more interesting than the last 5 points here.
 
 > Update this section (goal, deliverables, Do NOT list, done-tests, tripwires) verbatim from `02-IMPLEMENTATION-PLAN.md` when advancing to the next week. Do not advance past a gate week (3, 6, 8) without its measured number recorded per G10.
 
